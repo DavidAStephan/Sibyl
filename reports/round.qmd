@@ -1,0 +1,190 @@
+---
+title: "SIBYL Round Report"
+subtitle: "`r format(Sys.Date(), '%B %Y')`"
+format:
+  html:
+    toc: true
+    embed-resources: true
+    code-fold: true
+    code-tools: false
+execute:
+  echo: false
+  warning: false
+  message: false
+# Run chunks from the project root so tar_load() finds _targets/
+knitr:
+  opts_knit:
+    root.dir: ".."
+---
+
+```{r setup}
+#| include: false
+library(targets)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(scales)
+library(knitr)
+
+# Load the four local packages the way _targets.R does, so the qmd works
+# whether or not they've been installed for real.
+for (pkg in c("packages/judgement", "packages/martin",
+              "packages/nowcast",   "packages/sibyldata")) {
+  pkg_path <- if (dir.exists(pkg)) pkg else file.path("..", pkg)
+  if (dir.exists(pkg_path)) {
+    try(pkgload::load_all(pkg_path, quiet = TRUE), silent = TRUE)
+  }
+}
+
+# Load every pipeline target the report uses. Each tar_load fails fast if
+# the target hasn't been built yet.
+tar_load(c(
+  round_id, data_source, narrative, horizon,
+  handover_forecasts,
+  baseline, proposed_adjustments, approved_adjustments,
+  projection, projection_description, round_trip_check
+))
+
+# Headline aggregates we lead with in every round.
+HEADLINE <- c("Y", "RC", "GNE", "LUR", "PTM", "P", "NCR")
+```
+
+# Narrative
+
+```{r narrative}
+#| results: asis
+cat("> ", narrative, "\n", sep = "")
+```
+
+# Round configuration
+
+- **Round ID:** `r round_id`
+- **Data source:** `r data_source` `r if (data_source == "fixture") "(bundled MARTINDATA snapshot)"`
+- **Horizon:** `r horizon[1]` through `r horizon[2]`
+- **Adjustments proposed:** `r length(proposed_adjustments)`
+- **Adjustments approved:** `r length(approved_adjustments)`
+
+# Proposed and approved adjustments
+
+```{r adjustments}
+if (length(approved_adjustments) == 0L) {
+  cat("_No adjustments applied this round._",
+      if (length(proposed_adjustments) == 0L) {
+        " The LLM was either bypassed (`ANTHROPIC_API_KEY` unset) or proposed no quantitative changes from the narrative."
+      } else "",
+      "\n")
+} else {
+  approved_tbl <- as_tibble_adjustments(approved_adjustments) |>
+    select(equation, quarter, value, rationale, tail, confidence) |>
+    arrange(equation, quarter)
+  knitr::kable(approved_tbl, digits = 3)
+}
+```
+
+# Headline aggregates: baseline vs scenario
+
+```{r headlines-plot}
+#| fig-width: 9
+#| fig-height: 6
+plot_df <- dplyr::bind_rows(
+  baseline   |> mutate(series = "baseline"),
+  projection |> mutate(series = "with_adjustments")
+) |>
+  filter(variable %in% HEADLINE) |>
+  mutate(
+    year    = as.integer(substr(quarter, 1, 4)),
+    qnum    = as.integer(substr(quarter, 6, 6)),
+    qdate   = as.Date(sprintf("%04d-%02d-15", year, (qnum - 1) * 3 + 2))
+  )
+
+if (length(approved_adjustments) == 0L) {
+  plot_df <- plot_df |> filter(series == "baseline")
+}
+
+ggplot(plot_df, aes(qdate, value, colour = series)) +
+  geom_line(linewidth = 0.6) +
+  facet_wrap(~ variable, scales = "free_y") +
+  scale_x_date(date_breaks = "2 years", date_labels = "%Y") +
+  scale_colour_manual(values = c(baseline = "grey50",
+                                  with_adjustments = "steelblue")) +
+  labs(x = NULL, y = NULL, colour = NULL,
+       title = "Solved projections, headline aggregates",
+       subtitle = paste("Horizon", horizon[1], "to", horizon[2])) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r headline-table}
+#| results: asis
+if (length(approved_adjustments) > 0L) {
+  diff_df <- inner_join(
+    baseline   |> select(variable, quarter, baseline = value),
+    projection |> select(variable, quarter, with_adjustments = value),
+    by = c("variable", "quarter")
+  ) |>
+    filter(variable %in% HEADLINE) |>
+    mutate(diff = with_adjustments - baseline) |>
+    group_by(variable) |>
+    summarise(
+      max_abs_diff = max(abs(diff), na.rm = TRUE),
+      diff_at_end  = last(diff),
+      .groups = "drop"
+    )
+  cat("## Diffs vs baseline at end of horizon\n\n")
+  print(knitr::kable(diff_df, digits = 3))
+} else {
+  cat("_No diff to show — no adjustments applied._\n")
+}
+```
+
+# Nowcast handover summary
+
+```{r handover}
+if (nrow(handover_forecasts) == 0L) {
+  cat("_No handover forecasts produced (database had no ragged edge)._\n")
+} else {
+  knitr::kable(
+    handover_forecasts |>
+      filter(variable %in% HEADLINE) |>
+      mutate(quarter = as.character(quarter)) |>
+      arrange(variable, quarter),
+    digits = 3
+  )
+}
+```
+
+# LLM description of the projection
+
+```{r description}
+#| results: asis
+cat(projection_description, "\n")
+```
+
+# Round-trip check
+
+```{r round-trip}
+if (nrow(round_trip_check) == 0L) {
+  cat("_No round-trip check performed (no adjustments applied, or LLM bypassed)._\n")
+} else {
+  overall <- attr(round_trip_check, "overall_match")
+  if (!is.null(overall)) {
+    cat("**Overall match:** _", overall, "_\n\n", sep = "")
+  }
+  knitr::kable(round_trip_check)
+}
+```
+
+# Provenance
+
+```{r provenance}
+#| results: asis
+cat("- **Generated:** ", format(Sys.time(), "%Y-%m-%d %H:%M %Z"), "\n", sep = "")
+cat("- **Coefficients:** frozen (`MARTINMOD_AF.txt`)\n")
+cat("- **Database vintage:** ", attr(baseline, "scenario"), "\n", sep = "")
+```
+
+> This report is generated by the pipeline in `_targets.R`. The LLM is a
+> translator and drafter only — every numerical adjustment is reviewed and
+> approved by a human (via `judgement::review_and_approve()`) before MARTIN
+> sees it. In this run the human-approval step is non-interactive; flip the
+> `interactive` arg in `_targets.R` to gate manually.
