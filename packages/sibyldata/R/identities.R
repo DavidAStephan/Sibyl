@@ -159,3 +159,126 @@ apply_ibndr <- function(database, catalogue = series_catalogue()) {
   )
   database
 }
+
+#' Apply the annual-data-driven IBNDR depreciation rate
+#'
+#' Faithful port of [modify_data.prg:487-500](references/MARTIN-master/Programs/modify_data.prg#L487-L500).
+#' Computes annual non-mining business depreciation rate from the four
+#' annual ABS 5204.0 series (CFCTOT, CFCID, CFCOTC, CFCIBRE for
+#' consumption-of-fixed-capital; KTOT, KID, KOTC, KIBRE for capital
+#' stock), converts to a quarterly compounding rate, linearly
+#' interpolates to the quarterly grid, then backcasts to the start of
+#' the database and forward-fills to the end.
+#'
+#'   CFCIBN_annual  = CFCTOT - CFCID - CFCOTC - CFCIBRE
+#'   KIBN_annual    = KTOT   - KID   - KOTC   - KIBRE
+#'   IBNDRA_annual  = 100 * (CFCIBN_t / KIBN_{t-1})       # annual rate
+#'   IBNDR_quarterly = ((1 + IBNDRA_annual/100)^(1/4) - 1) * 100
+#'
+#' Replaces the static [apply_ibndr] placeholder when the annual inputs
+#' are available; falls back to the placeholder if any input is missing.
+#'
+#' @param database Named list of bimets ts (quarterly).
+#' @param annual_db Named list of `ts` (annual, frequency 1).
+#' @inheritParams apply_ibctr
+#' @keywords internal
+apply_ibndr_annual <- function(database, annual_db,
+                               catalogue = series_catalogue()) {
+  if (!is.null(database[["IBNDR"]])) return(database)
+  required <- c("CFCTOT", "CFCID", "CFCOTC", "CFCIBRE",
+                "KTOT", "KID", "KOTC", "KIBRE")
+  for (v in required) {
+    if (is.null(annual_db[[v]])) {
+      # At least one input missing — fall through to static handler.
+      return(database)
+    }
+  }
+  # Align annual series to the smallest common range.
+  starts <- sapply(annual_db[required], function(x) stats::tsp(x)[1])
+  ends   <- sapply(annual_db[required], function(x) stats::tsp(x)[2])
+  start_year <- floor(max(starts) + 1e-9)
+  end_year   <- floor(min(ends) + 1e-9)
+  if (start_year >= end_year) return(database)
+
+  align_annual <- function(x) {
+    tsp <- stats::tsp(x); s <- floor(tsp[1] + 1e-9)
+    lo <- start_year - s + 1L
+    hi <- end_year   - s + 1L
+    as.numeric(x)[lo:hi]
+  }
+  cfctot  <- align_annual(annual_db$CFCTOT)
+  cfcid   <- align_annual(annual_db$CFCID)
+  cfcotc  <- align_annual(annual_db$CFCOTC)
+  cfcibre <- align_annual(annual_db$CFCIBRE)
+  ktot    <- align_annual(annual_db$KTOT)
+  kid     <- align_annual(annual_db$KID)
+  kotc    <- align_annual(annual_db$KOTC)
+  kibre   <- align_annual(annual_db$KIBRE)
+
+  cfcibn <- cfctot - cfcid - cfcotc - cfcibre
+  kibn   <- ktot   - kid   - kotc   - kibre
+
+  # Annual depreciation rate using lag-1 (previous year's stock).
+  # Year-1 entry has no lag, so it's NA.
+  n_ann <- length(cfcibn)
+  ibndra_ann <- rep(NA_real_, n_ann)
+  for (i in seq.int(2L, n_ann)) {
+    if (!is.na(kibn[i - 1L]) && kibn[i - 1L] > 0 && !is.na(cfcibn[i])) {
+      ibndra_ann[i] <- 100 * cfcibn[i] / kibn[i - 1L]
+    }
+  }
+  # Annual rate to quarterly compounding rate.
+  ibndr_qrate_ann <- ((1 + ibndra_ann / 100) ^ (1 / 4) - 1) * 100
+
+  # Interpolate annual rates to quarterly grid. Each annual value applies
+  # to its fiscal-year-end (typically Q2). We place the value at Q2 of
+  # each year and linearly interpolate between, then backcast and
+  # forward-fill.
+  qspan <- database_span(database)
+  qn <- qspan$n_quarters
+  qy0 <- qspan$start_year
+  qq0 <- qspan$start_quarter
+
+  # Annual anchor positions: year y maps to quarter index (y - qy0)*4 + 2
+  # (interpret as Q2 of year y), with adjustment for the database's
+  # starting offset.
+  ibndr_q <- rep(NA_real_, qn)
+  ann_years <- seq(start_year, end_year)
+  for (i in seq_along(ann_years)) {
+    yr <- ann_years[i]
+    # Quarter index in database grid for Q2 of yr:
+    idx <- (yr - qy0) * 4L + (2L - qq0) + 1L
+    if (idx >= 1L && idx <= qn && !is.na(ibndr_qrate_ann[i])) {
+      ibndr_q[idx] <- ibndr_qrate_ann[i]
+    }
+  }
+  # Linear interpolation between non-NA anchors.
+  nonna_pos <- which(!is.na(ibndr_q))
+  if (length(nonna_pos) >= 2L) {
+    for (k in seq_len(length(nonna_pos) - 1L)) {
+      lo <- nonna_pos[k]
+      hi <- nonna_pos[k + 1L]
+      if (hi - lo > 1L) {
+        ibndr_q[(lo + 1L):(hi - 1L)] <- seq(
+          ibndr_q[lo], ibndr_q[hi],
+          length.out = hi - lo + 1L
+        )[-c(1, hi - lo + 1L)]
+      }
+    }
+  }
+  if (length(nonna_pos) >= 1L) {
+    # Backcast: carry first non-NA value backward.
+    first <- nonna_pos[1]
+    if (first > 1L) ibndr_q[seq_len(first - 1L)] <- ibndr_q[first]
+    # Forward-fill: carry last non-NA value forward.
+    last <- nonna_pos[length(nonna_pos)]
+    if (last < qn) ibndr_q[(last + 1L):qn] <- ibndr_q[last]
+  }
+
+  if (all(is.na(ibndr_q))) return(database)  # fell through
+
+  database[["IBNDR"]] <- bimets::TIMESERIES(
+    ibndr_q, START = c(qy0, qq0), FREQ = 4
+  )
+  database
+}

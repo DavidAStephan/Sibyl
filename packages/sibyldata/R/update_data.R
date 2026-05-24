@@ -123,8 +123,11 @@ to_martin_database <- function(raw, frequency = "Q") {
   db <- apply_pim(db, cat)
   # IBCTR and IBNDR are deterministic/static inputs needed by the IBCR
   # identity chain; populate before add_derived_series so the IBNDRA /
-  # RBR / IBCR formulas can evaluate.
+  # RBR / IBCR formulas can evaluate. apply_ibndr_annual computes IBNDR
+  # from the annual CFC/K capital-stock series when available; otherwise
+  # apply_ibndr falls back to a static placeholder.
   db <- apply_ibctr(db, cat)
+  db <- apply_ibndr_annual(db, annual_db, cat)
   db <- apply_ibndr(db, cat)
   db <- apply_iad_weights(db, cat)
   db <- add_derived_series(db, cat)

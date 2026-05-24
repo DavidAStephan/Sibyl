@@ -158,6 +158,36 @@ Punted from this session — left as follow-ups below:
   with a chain of dependencies. Currently served from the fixture.
   Porting cleanly means adding the whole chain.
 
+### B.b. IBCR identity chain + IAD weights — DONE
+
+Removes another cluster of fixture dependencies via
+[packages/sibyldata/R/identities.R](packages/sibyldata/R/identities.R):
+
+- **IBCTR** (corporate tax rate) — `apply_ibctr()` builds a piecewise-
+  constant series from 13 breakpoints lifted from
+  [import_data.prg:535-562](references/MARTIN-master/Programs/import_data.prg#L535-L562).
+- **IBNDR** (non-mining depreciation rate) — `apply_ibndr_annual()`
+  ports modify_data.prg:487-500 faithfully: pulls annual ABS 5204.0
+  CFC and K series (4 new catalogue rows: CFCTOT, CFCID, CFCOTC,
+  CFCIBRE), computes annual CFCIBN/lag(KIBN,1), converts to quarterly
+  rate, linearly interpolates to quarterly. Falls back to the static
+  `apply_ibndr()` placeholder if any annual input is missing.
+  Live range [1.14, 1.70] vs fixture [1.14, 1.65].
+- **IBNDRA / RBR / IBCR** — added as catalogue derived rows with
+  formula expressions using `bimets::TSLAG()` for lagged terms.
+  Evaluated automatically by `add_derived_series` after IBCTR/IBNDR
+  are present.
+- **IAD_W_C/I/GI/GC/X** — vendored `references/MARTIN-master/Data/t_iad.csv`
+  directly to `inst/extdata/iad_weights.csv` (the pre-computed output
+  of EViews's io_calcs.prg). Loading 13 year-specific ABS XLS files
+  with hardcoded cell ranges is brittle; vendoring the output gives
+  the same series with much less risk. A future
+  `update_iad_weights()` could read fresh IO tables.
+
+Bug fixed in `cumulate_pct_to_level` from previous session was
+re-confirmed; CSV description fields containing `lag(IBNDR,1)` now
+get quoted properly.
+
 ### B. State-space estimation port — PARTIAL
 
 The three supply-side trends landed this session via KFAS ports in
