@@ -15,17 +15,23 @@
 #'
 #' @param vintage A `Date` identifying the data vintage. Stamped into every
 #'   row's `vintage` column and used as the cache key. Defaults to today.
-#' @param sources Character vector of sources to refresh. Default: just
-#'   `"fred"` — the only one implemented. Pass `"all"` to attempt every
-#'   source (which will currently error for the un-implemented ones).
+#' @param sources Character vector of sources to refresh. Default:
+#'   `"all"` — every implemented source. Pass an explicit vector to
+#'   restrict (e.g. `c("fred")` for FRED-only).
 #' @param refresh Logical. If `FALSE` (default), cached vintages are
 #'   returned untouched. `TRUE` re-pulls.
+#' @param tolerate_failures Logical. If `TRUE` (default), a single
+#'   source's failure (typically a transient network error) emits a
+#'   warning and the run continues with the surviving sources — the
+#'   downstream pipeline can fall back to the fixture via
+#'   [merge_with_fallback()]. If `FALSE`, any source failure halts the run.
 #'
 #' @return A tidy tibble of `(series_id, source, date, value, vintage)`.
 #' @export
 update_data <- function(vintage = Sys.Date(),
-                        sources = c("fred"),
-                        refresh = FALSE) {
+                        sources = "all",
+                        refresh = FALSE,
+                        tolerate_failures = TRUE) {
   vintage <- as.Date(vintage)
   all_sources <- c("abs", "rba", "fred", "oecd", "worldbank", "bom")
   if (identical(sources, "all")) sources <- all_sources
@@ -37,7 +43,18 @@ update_data <- function(vintage = Sys.Date(),
   }
 
   panels <- purrr::map(sources, function(src) {
-    fetch_source(src, vintage = vintage, refresh = refresh)
+    if (!tolerate_failures) {
+      return(fetch_source(src, vintage = vintage, refresh = refresh))
+    }
+    tryCatch(
+      fetch_source(src, vintage = vintage, refresh = refresh),
+      error = function(e) {
+        warning("update_data: source '", src, "' failed (",
+                conditionMessage(e), "); continuing without it.",
+                call. = FALSE)
+        NULL
+      }
+    )
   })
   dplyr::bind_rows(panels)
 }

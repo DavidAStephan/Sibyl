@@ -65,9 +65,13 @@ list(
            "_round1")
   ),
 
-  # "fixture" reads packages/martin/inst/extdata/martin_data_fixture.xlsx;
-  # "live" routes through sibyldata::update_data() — currently fred-only.
-  tar_target(data_source, "fixture"),
+  # "fixture" reads packages/martin/inst/extdata/martin_data_fixture.xlsx
+  # directly. "live" fetches from every implemented public source, pivots
+  # via sibyldata::to_martin_database() (which now includes the
+  # deterministic dummy/scalar handlers), and merges the result against
+  # the fixture so MARTIN's behavioural-equation TSRANGEs still have
+  # full histories for series the live data can't reach back to.
+  tar_target(data_source, "live"),
 
   # The narrative the round is built on. Plain string; edit in this file
   # or read from `narrative.txt` if you prefer.
@@ -92,9 +96,13 @@ list(
     if (data_source == "fixture") {
       martin::read_fixture()
     } else {
-      sibyldata::to_martin_database(
-        sibyldata::update_data(sources = c("fred"))
-      )
+      # Pull every implemented source. Transient failures (e.g. ABS
+      # download glitches) emit warnings via update_data()'s
+      # tolerate_failures path; the merge step below backfills any
+      # series that didn't materialise from live data.
+      panel <- sibyldata::update_data(sources = "all")
+      live  <- sibyldata::to_martin_database(panel)
+      sibyldata::merge_with_fallback(live, martin::read_fixture())
     }
   ),
 

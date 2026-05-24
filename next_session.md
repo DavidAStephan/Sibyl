@@ -19,10 +19,10 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **355 pass, 0 fail, 15 skip** across the 4 packages |
-| Pipeline `tar_make()` | 15/15 targets, ~36 s cold |
+| Test suite | **365 pass, 0 fail, 15 skip** across the 4 packages |
+| Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
-| Live data → MARTIN integration smoke | **solves end-to-end**, projected ~76 % catalogue coverage (155/205 fixture vars; 113 from live data + 42 deterministic dummies/scalars added this session) |
+| Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
 | Round report | renders to `reports/round.html` |
 
 The 15 skips are all intentional — live-API tests that require keys
@@ -118,55 +118,45 @@ These are the items left over from the last autonomous session,
 ranked by leverage. Pick whichever you have appetite for; each is
 independent.
 
-### A. Live-data coverage push — partial; remaining items below
+### A. Live-data coverage push — DONE
 
-Item A1 ("dummies") and the in-model scope of A2 ("PI_TARGET") landed
-this session. Live coverage projected at 76 % (155/205) — past the
-threshold for flipping the `_targets.R` default. **Remaining items:**
+The pipeline now defaults to `data_source = "live"` and solves
+end-to-end. Done items:
 
-1. ~~**Dummy series** (~30 vars)~~ **DONE.** 41 dummy rows materialise
-   via [`apply_dummies()`](packages/sibyldata/R/dummies.R) driven by
+1. ~~**Dummy series**~~ **DONE.** 41 dummy rows via
+   [`apply_dummies()`](packages/sibyldata/R/dummies.R) +
    [dummies.csv](packages/sibyldata/inst/extdata/dummies.csv). Kinds
-   covered: `pulse` (22), `tristate` (1, D_OLYX), `range_lt/gt/ge/gt_lt`
-   (5), `trend_carry` (5), `counter_carry` (8). Each row verified
-   bit-identical against the bundled fixture in
+   covered: `pulse` (22), `tristate` (1, D_OLYX), `range_*` (5),
+   `trend_carry` (5), `counter_carry` (8). Each bit-identical to
+   the bundled fixture in
    [test-dummies.R](packages/sibyldata/tests/testthat/test-dummies.R).
-   Two dummies that appeared in `modify_data.prg` but are not
-   referenced symbolically in `MARTINMOD_AF.txt` (`DUM_2008Q4`,
-   `PTM_DUM`) were intentionally skipped.
 
-2. ~~**IAD weights and steady-state scalars**~~ **PARTIAL.** Only
-   `PI_TARGET` (2.5) was actually needed — every other scalar in
-   `modify_data.prg:694-713` is inlined as a literal in
-   `MARTINMOD_AF.txt` (e.g. the `2 * LURGAP` in the NCR Taylor Rule
-   is `TR_LURGAP`) and not referenced by name, so synthesising those
-   constants would be busywork. Implemented via
-   [`apply_scalars()`](packages/sibyldata/R/dummies.R) +
-   [scalars.csv](packages/sibyldata/inst/extdata/scalars.csv).
+2. ~~**Scalars**~~ **PARTIAL/DONE.** Only `PI_TARGET = 2.5` was
+   actually needed — every other scalar in `modify_data.prg:694-713`
+   is inlined as a literal in `MARTINMOD_AF.txt` (e.g. `2 * LURGAP`
+   for the NCR Taylor Rule is `TR_LURGAP`) and not referenced by
+   name.
 
-   The **IAD weights** (`IAD_W_C/I/GI/GC/X`) are NOT scalars — they're
-   time-varying annual series interpolated from input-output omega
-   tables ([io_calcs.prg:315-740](references/MARTIN-master/Programs/io_calcs.prg)).
-   Porting that is a session of its own; punted to a follow-up.
+3. ~~**Flipping the default to `data_source = "live"`**~~ **DONE.**
+   `update_data()` now defaults to `sources = "all"` with
+   `tolerate_failures = TRUE` (a flaky ABS run warns and continues
+   rather than killing the pipeline). `_targets.R`'s live branch
+   calls [`sibyldata::merge_with_fallback()`](packages/sibyldata/R/merge.R)
+   against `martin::read_fixture()` so series with shorter live
+   histories than MARTIN's behavioural-equation TSRANGEs get the
+   fixture's long history.
 
-3. **`IBCR`** — also punted. It's an IDENTITY in the model file
-   (`MARTINMOD_AF.txt:655-656`) whose inputs (`RBR`, `IBNDRA`, `IBCTR`,
-   `IBNDR`, plus `N10R`, `PIBN`, `PGNE`) are themselves identities or
-   behavioural equations not yet in the catalogue. Porting cleanly
-   means adding the whole chain.
+Punted from this session — left as follow-ups below:
 
-4. **Flipping the default to `data_source = "live"`.** With dummies
-   landed, live coverage clears 70 %. But the current `_targets.R`
-   live branch is `update_data(sources = c("fred"))` only, and lacks
-   the fixture-fallback merge that `scripts/live_integration_smoke.R`
-   does for series with shorter live histories than MARTIN's
-   behavioural-equation TSRANGEs. To safely flip the default:
-   - Expand `sources = "all"` (or list every source explicitly).
-   - Add a fixture-fallback merge step like the smoke's (lines 116-126).
-   - Then change `data_source = "fixture"` → `"live"`.
-
-   None of the steps are large; estimate ½ session including a
-   regression check that the round still solves.
+- **IAD weights** (`IAD_W_C/I/GI/GC/X`) — not scalars; they're
+  time-varying annual series interpolated from input-output omega
+  tables ([io_calcs.prg:315-740](references/MARTIN-master/Programs/io_calcs.prg)).
+  Currently served from the fixture via `merge_with_fallback`.
+  Proper port is ~½ session.
+- **`IBCR` + chain** (RBR, IBNDRA, IBCTR, IBNDR) — IDENTITY in the
+  model file ([MARTINMOD_AF.txt:655-656](references/bimets-main/MARTINMOD_AF.txt))
+  with a chain of dependencies. Currently served from the fixture.
+  Porting cleanly means adding the whole chain.
 
 ### B. State-space estimation port (~1 session)
 
