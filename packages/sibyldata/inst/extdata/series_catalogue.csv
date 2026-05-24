@@ -204,3 +204,10 @@ PXS_TREND_2,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 2001Q1-2022Q2; 0
 WPX_TREND_1,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 1980Q1-2000Q4; 0 before; carries after,Index,NA
 WPX_TREND_2,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 2001Q1-2022Q2; 0 before; carries after,Index,NA
 PI_TARGET,derived,NA,NA,Q,NA,scalar,RBA inflation target (midpoint of 2-3% band); 2.5 constant series,Percent,NA
+LHPP,derived,NA,NA,Q,NA,derived,LHPP = HOURS / LE * 3 (quarterly hours worked per person; monthly-to-quarterly factor of 3),Hours per person per quarter,HOURS / LE * 3
+TDLLA,derived,NA,NA,Q,NA,state_space,Trend dlog labour productivity from KFAS local-linear-trend on log(LA); port of supply_side.prg ss_la,Per quarter,NA
+TLLA,derived,NA,NA,Q,NA,state_space,Trend log labour productivity (level) smoothed state from ss_la,Log index,NA
+TDLLPOP,derived,NA,NA,Q,NA,state_space,Trend dlog population from KFAS local-linear-trend on log(LPOP); port of supply_side.prg ss_lpop,Per quarter,NA
+TLLPOP,derived,NA,NA,Q,NA,state_space,Trend log population (level) smoothed state from ss_lpop,Log persons,NA
+TDLLHPP,derived,NA,NA,Q,NA,state_space,Trend dlog hours per person (constant) from KFAS random-walk-plus-drift on log(LHPP); port of supply_side.prg ss_lhpp,Per quarter,NA
+TLLHPP,derived,NA,NA,Q,NA,state_space,Trend log hours per person (level) smoothed state from ss_lhpp,Log hours,NA

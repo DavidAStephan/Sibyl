@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **365 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **380 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -158,17 +158,42 @@ Punted from this session — left as follow-ups below:
   with a chain of dependencies. Currently served from the fixture.
   Porting cleanly means adding the whole chain.
 
-### B. State-space estimation port (~1 session)
+### B. State-space estimation port — PARTIAL
 
-The five unobserved trends (TDLLA, TDLLPOP, TDLLHPP, PI_E, TLUR,
-RSTAR) come from EViews state-space models in
-[references/MARTIN-master/Programs/](references/MARTIN-master/Programs/)
-(`pistar.prg`, `nairu.prg`, `rstar.prg`). Until ported, sibyldata
-splices them from `martin_public.wf1` (which we vendor in
-`references/`). Port via the `KFAS` R package.
+The three supply-side trends landed this session via KFAS ports in
+[packages/sibyldata/R/state_space.R](packages/sibyldata/R/state_space.R):
 
-Until this lands, `_targets.R` and the live smoke both depend on
-hybrid (live + fixture) databases for the trend variables.
+- ~~**TDLLA, TLLA**~~ — local-linear-trend on `log(LA)` (port of
+  `supply_side.prg:17-44`). Live ABS A2304192L (labour productivity)
+  feeds it. Estimate has ~20 % mean offset vs fixture (which makes
+  sense — different vintages, different ABS series methodology
+  between EViews's snapshot and current ABS).
+- ~~**TDLLPOP, TLLPOP**~~ — local-linear-trend on `log(LPOP)` (port
+  of `supply_side.prg:46-73`). Modern-period (1990+) decadal means
+  agree with fixture to within 0.001 % (essentially exact).
+- ~~**TDLLHPP, TLLHPP**~~ — random-walk + drift on `log(LHPP)` (port
+  of `supply_side.prg:75-108`). LHPP itself is added as a derived
+  catalogue row (`HOURS / LE * 3`). Drift estimate within 14 % of
+  EViews's MLE (small absolute error: ~1e-4 on a value ~1e-3).
+
+Because the merge prefers whichever source has more history, live
+KFAS estimates only "win" over the fixture when live ABS data extends
+beyond 2019Q3 — currently `TDLLA` only (ABS LA goes through ~2026Q1).
+The pipeline solves end-to-end with the new live trends in the path.
+
+**Remaining state-space models (~1 session):**
+
+- **`PI_E`** — inflation expectations from 7-signal model
+  ([pistar.prg](references/MARTIN-master/Programs/pistar.prg)).
+- **`TLUR`** — NAIRU from 2-signal Phillips curve + ULC model
+  ([nairu.prg](references/MARTIN-master/Programs/nairu.prg)).
+- **`RSTAR`** — neutral interest rate from 11-state model
+  ([rstar.prg](references/MARTIN-master/Programs/rstar.prg)). The
+  most complex of the bunch.
+
+These also require supporting input series that may not be in the
+catalogue yet (bond-implied inflation, survey expectations,
+unit-labour-cost growth) — those would be added alongside the port.
 
 ### C. Nowcast monthly bridge equations (~½ session)
 

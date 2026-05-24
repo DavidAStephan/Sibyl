@@ -122,6 +122,9 @@ to_martin_database <- function(raw, frequency = "Q") {
   db <- apply_chowlin(db, annual_db, cat)
   db <- apply_pim(db, cat)
   db <- add_derived_series(db, cat)
+  # State-space trends depend on LHPP being derived (HOURS / LE * 3),
+  # so they run after add_derived_series.
+  db <- apply_state_space_trends(db, cat)
   db <- apply_dummies(db, cat)
   db <- apply_scalars(db, cat)
 

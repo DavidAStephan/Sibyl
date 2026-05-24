@@ -23,6 +23,7 @@ Imports:
     fs,
     glue,
     here,
+    KFAS,
     lubridate,
     purrr,
     readabs,
