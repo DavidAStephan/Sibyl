@@ -19,13 +19,13 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **325 pass, 0 fail, 9 skip** across the 4 packages |
+| Test suite | **355 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` | 15/15 targets, ~36 s cold |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
-| Live data → MARTIN integration smoke | **solves end-to-end**, 55 % catalogue coverage (113/205 fixture vars) |
+| Live data → MARTIN integration smoke | **solves end-to-end**, projected ~76 % catalogue coverage (155/205 fixture vars; 113 from live data + 42 deterministic dummies/scalars added this session) |
 | Round report | renders to `reports/round.html` |
 
-The 9 skips are all intentional — live-API tests that require keys
+The 15 skips are all intentional — live-API tests that require keys
 (FRED_API_KEY, ANTHROPIC_API_KEY) that aren't required for CI.
 
 ---
@@ -118,34 +118,55 @@ These are the items left over from the last autonomous session,
 ranked by leverage. Pick whichever you have appetite for; each is
 independent.
 
-### A. Live-data coverage push (~½ to 1 session)
+### A. Live-data coverage push — partial; remaining items below
 
-Live pipeline currently covers 55 % of MARTIN's 205 variables. The
-gap is dominated by deterministic pieces:
+Item A1 ("dummies") and the in-model scope of A2 ("PI_TARGET") landed
+this session. Live coverage projected at 76 % (155/205) — past the
+threshold for flipping the `_targets.R` default. **Remaining items:**
 
-1. **Dummy series** (~30 vars: `D_AFC1..5`, `D_GST*`, `D_IBRE_1..5`,
-   `D_LE`, `D_NSP`, `D_OLY`, `DUM_RC`, `*_TREND`, `LUR_DUM`,
-   `RTWI_CONST_DUM`, `TADP`). Each is a deterministic function of
-   `date` — pulses at specific quarters, indicator ranges, monotonic
-   trends with stop points. Write `apply_dummies(db, registry)` that
-   builds each from a small spec table. Source rules in
-   [references/MARTIN-master/Programs/modify_data.prg](references/MARTIN-master/Programs/modify_data.prg)
-   lines 558–684.
+1. ~~**Dummy series** (~30 vars)~~ **DONE.** 41 dummy rows materialise
+   via [`apply_dummies()`](packages/sibyldata/R/dummies.R) driven by
+   [dummies.csv](packages/sibyldata/inst/extdata/dummies.csv). Kinds
+   covered: `pulse` (22), `tristate` (1, D_OLYX), `range_lt/gt/ge/gt_lt`
+   (5), `trend_carry` (5), `counter_carry` (8). Each row verified
+   bit-identical against the bundled fixture in
+   [test-dummies.R](packages/sibyldata/tests/testthat/test-dummies.R).
+   Two dummies that appeared in `modify_data.prg` but are not
+   referenced symbolically in `MARTINMOD_AF.txt` (`DUM_2008Q4`,
+   `PTM_DUM`) were intentionally skipped.
 
-2. **IAD weights and steady-state scalars** (~10 entries: `IAD_W_C`,
-   `IAD_W_I`, `IAD_W_GI`, `IAD_W_GC`, `IAD_W_X`, `PI_TARGET`,
-   `AASTEADY_STATE_LA`, `AASTEADY_STATE_POP`, `TR_LURGAP`, `TR_PTM`,
-   `TR_DLUR`, `RCR_TARGET`, `WRR_TARGET`, `RWPCOM_LR`). Mostly
-   constants from `io_calcs.prg` and `modify_data.prg`. Ship as
-   `inst/extdata/scalars.csv` or hardcode in a small handler.
+2. ~~**IAD weights and steady-state scalars**~~ **PARTIAL.** Only
+   `PI_TARGET` (2.5) was actually needed — every other scalar in
+   `modify_data.prg:694-713` is inlined as a literal in
+   `MARTINMOD_AF.txt` (e.g. the `2 * LURGAP` in the NCR Taylor Rule
+   is `TR_LURGAP`) and not referenced by name, so synthesising those
+   constants would be busywork. Implemented via
+   [`apply_scalars()`](packages/sibyldata/R/dummies.R) +
+   [scalars.csv](packages/sibyldata/inst/extdata/scalars.csv).
 
-3. **`IBCR`** (cost of capital) — already has a formula structure in
-   the legacy code (it's the messy `@recode(...)` expression in
-   `modify_data.prg` ~line 535).
+   The **IAD weights** (`IAD_W_C/I/GI/GC/X`) are NOT scalars — they're
+   time-varying annual series interpolated from input-output omega
+   tables ([io_calcs.prg:315-740](references/MARTIN-master/Programs/io_calcs.prg)).
+   Porting that is a session of its own; punted to a follow-up.
 
-Bumping these to coverage gets the live pipeline well past 70 %,
-which makes it realistic to default `_targets.R` to
-`data_source = "live"`.
+3. **`IBCR`** — also punted. It's an IDENTITY in the model file
+   (`MARTINMOD_AF.txt:655-656`) whose inputs (`RBR`, `IBNDRA`, `IBCTR`,
+   `IBNDR`, plus `N10R`, `PIBN`, `PGNE`) are themselves identities or
+   behavioural equations not yet in the catalogue. Porting cleanly
+   means adding the whole chain.
+
+4. **Flipping the default to `data_source = "live"`.** With dummies
+   landed, live coverage clears 70 %. But the current `_targets.R`
+   live branch is `update_data(sources = c("fred"))` only, and lacks
+   the fixture-fallback merge that `scripts/live_integration_smoke.R`
+   does for series with shorter live histories than MARTIN's
+   behavioural-equation TSRANGEs. To safely flip the default:
+   - Expand `sources = "all"` (or list every source explicitly).
+   - Add a fixture-fallback merge step like the smoke's (lines 116-126).
+   - Then change `data_source = "fixture"` → `"live"`.
+
+   None of the steps are large; estimate ½ session including a
+   regression check that the round still solves.
 
 ### B. State-space estimation port (~1 session)
 
@@ -311,5 +332,14 @@ CLAUDE.md                        ← context for sessions
 
 ## What was committed last
 
-See `git log` — the initial commit is everything together (this
-was a no-git project for many sessions until the wrap-up commit).
+See `git log`. The initial commit was everything together (this was
+a no-git project for many sessions until the wrap-up commit). The
+follow-up commit adds:
+
+- 41 dummy rows + 1 scalar row to the series catalogue
+- `apply_dummies()` and `apply_scalars()` handlers wired into
+  `to_martin_database()`
+- 9 new test files asserting each dummy kind bit-matches the
+  bundled fixture
+- Description fix on the existing `D_OLY` row (the pulse is at
+  2004Q4, not 2000Q4 as the original placeholder description said)

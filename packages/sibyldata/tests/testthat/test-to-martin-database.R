@@ -59,5 +59,9 @@ test_that("to_martin_database() ignores series not in the catalogue", {
     vintage   = Sys.Date()
   )
   out <- to_martin_database(panel)
-  expect_length(out, 0L)
+  # Only deterministic calendar series (dummies + scalars) materialise from
+  # an empty data panel; nothing data-derived is added.
+  cat <- series_catalogue()
+  calendar_only <- cat$martin_var[cat$transformation %in% c("dummy", "scalar")]
+  expect_setequal(names(out), calendar_only)
 })

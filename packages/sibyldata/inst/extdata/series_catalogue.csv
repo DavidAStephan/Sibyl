@@ -162,3 +162,45 @@ RLC,derived,NA,NA,Q,NA,derived,RLC = PAE / PGNE (real labour cost),Index,PAE / P
 RULC,derived,NA,NA,Q,NA,derived,RULC = NULC / PGNE (real unit labour cost),Index,NULC / PGNE
 RULCY,derived,NA,NA,Q,NA,derived,"RULCY = NULC / PY (real unit labour cost, GDP-deflated)",Index,NULC / PY
 LURGAP,derived,NA,NA,Q,NA,derived,LURGAP = LUR - TLUR (unemployment gap above NAIRU),Percentage points,NA
+D_OLY,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2004Q4 (post-Olympics revision shock),0/1,NA
+D_AFC1,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1997Q3 (Asian Financial Crisis Q1),0/1,NA
+D_AFC2,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1997Q4 (Asian Financial Crisis Q2),0/1,NA
+D_AFC3,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1998Q1 (Asian Financial Crisis Q3),0/1,NA
+D_AFC4,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1998Q2 (Asian Financial Crisis Q4),0/1,NA
+D_AFC5,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1998Q3 (Asian Financial Crisis Q5),0/1,NA
+D_GSTMAR,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2000Q1 (pre-GST consumption pull-forward),0/1,NA
+D_GSTJUN,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2000Q2 (pre-GST month),0/1,NA
+D_GSTSEP,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2000Q3 (GST introduction),0/1,NA
+D_GSTDEC,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2000Q4 (post-GST settling),0/1,NA
+D_IBRE_1,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1999Q4 (resource investment break Q1),0/1,NA
+D_IBRE_2,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2001Q4 (resource investment break Q2),0/1,NA
+D_IBRE_3,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2002Q1 (resource investment break Q3),0/1,NA
+D_IBRE_4,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2002Q2 (resource investment break Q4),0/1,NA
+D_IBRE_5,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2002Q3 (resource investment break Q5),0/1,NA
+D_LE,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2003Q2 (employment series break),0/1,NA
+D_RBAGOLD,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1997Q2 (RBA gold reserves sale),0/1,NA
+D_2008Q4,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2008Q4 (GFC quarter),0/1,NA
+PIBRE_DUM1,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2000Q4 (resource investment price level shift),0/1,NA
+PIBRE_DUM2,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2001Q1 (resource investment price level shift),0/1,NA
+PIBRE_DUM3,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2001Q2 (resource investment price level shift),0/1,NA
+PIBRE_DUM4,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2001Q3 (resource investment price level shift),0/1,NA
+D_OLYX,derived,NA,NA,Q,NA,dummy,Olympics export-services tristate dummy (+1 2000Q3, -1 2000Q4),-1/0/+1,NA
+D_CPMCG,derived,NA,NA,Q,NA,dummy,Range dummy: 1 before 2000Q2 (pre-GST consumption regime),0/1,NA
+D_NSP,derived,NA,NA,Q,NA,dummy,Range dummy: 1 strictly between 1997Q4 and 2008Q1,0/1,NA
+DUM_RC,derived,NA,NA,Q,NA,dummy,Range dummy: 1 before 2008Q1 (pre-GFC real cash rate regime),0/1,NA
+LUR_DUM,derived,NA,NA,Q,NA,dummy,"Range dummy: 1 from 2031Q4 onward (steady-state unemployment regime)",0/1,NA
+RTWI_CONST_DUM,derived,NA,NA,Q,NA,dummy,Range dummy: 1 strictly after 2031Q4 (steady-state RTWI regime),0/1,NA
+PC_TREND,derived,NA,NA,Q,NA,dummy,Time trend over 1982Q1-2022Q2; carries past 2022Q2,Index,NA
+PID_TREND,derived,NA,NA,Q,NA,dummy,Time trend over 1982Q1-2022Q2 (dwelling investment deflator drift); carries,Index,NA
+PXM_TREND,derived,NA,NA,Q,NA,dummy,Time trend over 1986Q1-2000Q4 (manufacturing export price); carries,Index,NA
+XS_TREND,derived,NA,NA,Q,NA,dummy,Time trend over 1959Q3-2001Q3 (services export volume drift); carries,Index,NA
+TADP,derived,NA,NA,Q,NA,dummy,Time trend over 1959Q3-2011Q4 (total factor productivity drift); carries,Index,NA
+PIBN_TREND_1,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 1985Q1-2012Q4; 0 before; carries after,Index,NA
+PIBN_TREND_2,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 2013Q1-2022Q2; 0 before; carries after,Index,NA
+POTC_TREND_1,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 1992Q1-2007Q4; 0 before; carries after,Index,NA
+POTC_TREND_2,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 2008Q1-2022Q2; 0 before; carries after,Index,NA
+PXS_TREND_1,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 1986Q1-2000Q4; 0 before; carries after,Index,NA
+PXS_TREND_2,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 2001Q1-2022Q2; 0 before; carries after,Index,NA
+WPX_TREND_1,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 1980Q1-2000Q4; 0 before; carries after,Index,NA
+WPX_TREND_2,derived,NA,NA,Q,NA,dummy,Counter trend incrementing 2001Q1-2022Q2; 0 before; carries after,Index,NA
+PI_TARGET,derived,NA,NA,Q,NA,scalar,RBA inflation target (midpoint of 2-3% band); 2.5 constant series,Percent,NA

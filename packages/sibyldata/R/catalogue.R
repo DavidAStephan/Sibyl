@@ -22,7 +22,9 @@
 #' - `transformation` — `direct` (just rename), `spliced` (needs
 #'   backcasting / splicing), `chowlin` (Chow-Lin annual→quarterly),
 #'   `level_from_pct` (cumulate from a base), `derived` (computed from other
-#'   catalogue entries).
+#'   catalogue entries), `dummy` (deterministic calendar dummy / trend,
+#'   spec in `inst/extdata/dummies.csv`), `scalar` (constant series,
+#'   spec in `inst/extdata/scalars.csv`).
 #' - `description` — plain English (consumed by the LLM and humans alike).
 #' - `units` — free text.
 #'

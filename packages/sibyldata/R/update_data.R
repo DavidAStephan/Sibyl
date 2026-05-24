@@ -96,12 +96,17 @@ to_martin_database <- function(raw, frequency = "Q") {
 
   # Apply transformations in dependency order. PIM (KV from V) must come
   # before derived since some formulas reference KV. Chow-Lin must come
-  # before derived since IBN = IB - IBRE references IBRE.
+  # before derived since IBN = IB - IBRE references IBRE. Dummies and
+  # scalars are deterministic calendar series independent of the data
+  # slice, so they run last (and consult database_span to size themselves
+  # to the data they accompany).
   db <- apply_level_from_pct(db, cat)
   db <- apply_splices(db, cat)
   db <- apply_chowlin(db, annual_db, cat)
   db <- apply_pim(db, cat)
   db <- add_derived_series(db, cat)
+  db <- apply_dummies(db, cat)
+  db <- apply_scalars(db, cat)
 
   derived_added   <- attr(db, "derived_added")
   derived_skipped <- attr(db, "derived_skipped")
