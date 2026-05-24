@@ -91,10 +91,10 @@ SUPPLY_VPRIOR <- list(
 #' @keywords internal
 apply_state_space_trends <- function(database, catalogue = series_catalogue()) {
   # TDLLA + TLLA from log(LA)
-  if (is.null(database$TDLLA) && !is.null(database$LA)) {
+  if (is.null(database[["TDLLA"]]) && !is.null(database[["LA"]])) {
     fit <- tryCatch(
       fit_local_linear_trend(
-        y_ts        = log(database$LA),
+        y_ts        = log(database[["LA"]]),
         sample_start = SUPPLY_SAMPLE_START$LA,
         mprior      = SUPPLY_MPRIOR$LA,
         vprior      = SUPPLY_VPRIOR$LA,
@@ -110,16 +110,16 @@ apply_state_space_trends <- function(database, catalogue = series_catalogue()) {
       }
     )
     if (!is.null(fit)) {
-      database$TDLLA <- fit$TDRIFT
-      if (is.null(database$TLLA)) database$TLLA <- fit$TLEVEL
+      database[["TDLLA"]] <- fit$TDRIFT
+      if (is.null(database[["TLLA"]])) database[["TLLA"]] <- fit$TLEVEL
     }
   }
 
   # TDLLPOP + TLLPOP from log(LPOP)
-  if (is.null(database$TDLLPOP) && !is.null(database$LPOP)) {
+  if (is.null(database[["TDLLPOP"]]) && !is.null(database[["LPOP"]])) {
     fit <- tryCatch(
       fit_local_linear_trend(
-        y_ts        = log(database$LPOP),
+        y_ts        = log(database[["LPOP"]]),
         sample_start = SUPPLY_SAMPLE_START$LPOP,
         mprior      = SUPPLY_MPRIOR$LPOP,
         vprior      = SUPPLY_VPRIOR$LPOP,
@@ -135,16 +135,69 @@ apply_state_space_trends <- function(database, catalogue = series_catalogue()) {
       }
     )
     if (!is.null(fit)) {
-      database$TDLLPOP <- fit$TDRIFT
-      if (is.null(database$TLLPOP)) database$TLLPOP <- fit$TLEVEL
+      database[["TDLLPOP"]] <- fit$TDRIFT
+      if (is.null(database[["TLLPOP"]])) database[["TLLPOP"]] <- fit$TLEVEL
     }
   }
 
+  # PI_E from 7-signal local-level KFAS port of pistar.prg.
+  # R's `$` partial-matches `database[["PI_E"]]` to `database[["PI_E_BOND"]]` —
+  # use `[[` everywhere for exact matching on these closely-named series.
+  if (is.null(database[["PI_E"]]) &&
+      !is.null(database[["PTM"]]) &&
+      !is.null(database[["PI_E_BOND"]])) {
+    fit <- tryCatch(
+      fit_pie_kfas(database, sample_start = "1985Q4"),
+      error = function(e) {
+        warning("apply_state_space_trends: PI_E fit failed (",
+                conditionMessage(e), "); skipping PI_E.",
+                call. = FALSE)
+        NULL
+      }
+    )
+    if (!is.null(fit)) database[["PI_E"]] <- fit$PI_E
+  }
+
+  # TLUR (NAIRU) — Phillips-curve state-space, 2-signal (dlptm, dlulc)
+  if (is.null(database[["TLUR"]]) &&
+      !is.null(database[["LUR"]]) &&
+      !is.null(database[["PTM"]]) &&
+      !is.null(database[["Y"]]) &&
+      !is.null(database[["NHCOE"]])) {
+    fit <- tryCatch(
+      fit_nairu_kfas(database, sample_start = "1986Q3"),
+      error = function(e) {
+        warning("apply_state_space_trends: TLUR fit failed (",
+                conditionMessage(e), "); skipping TLUR.",
+                call. = FALSE)
+        NULL
+      }
+    )
+    if (!is.null(fit)) database[["TLUR"]] <- fit$TLUR
+  }
+
+  # RSTAR — neutral rate as smoothed real cash rate (v0 simplification of
+  # rstar.prg's 11-state model; see fit_rstar_kfas docstring).
+  if (is.null(database[["RSTAR"]]) &&
+      !is.null(database[["NCR"]]) &&
+      !is.null(database[["PTM"]])) {
+    fit <- tryCatch(
+      fit_rstar_kfas(database, sample_start = "1986Q3"),
+      error = function(e) {
+        warning("apply_state_space_trends: RSTAR fit failed (",
+                conditionMessage(e), "); skipping RSTAR.",
+                call. = FALSE)
+        NULL
+      }
+    )
+    if (!is.null(fit)) database[["RSTAR"]] <- fit$RSTAR
+  }
+
   # TDLLHPP + TLLHPP from log(LHPP)
-  if (is.null(database$TDLLHPP) && !is.null(database$LHPP)) {
+  if (is.null(database[["TDLLHPP"]]) && !is.null(database[["LHPP"]])) {
     fit <- tryCatch(
       fit_random_walk_drift(
-        y_ts        = log(database$LHPP),
+        y_ts        = log(database[["LHPP"]]),
         sample_start = SUPPLY_SAMPLE_START$LHPP,
         mprior_level = SUPPLY_MPRIOR$LHPP[1],
         vprior_level = SUPPLY_VPRIOR$LHPP[1],
@@ -159,8 +212,8 @@ apply_state_space_trends <- function(database, catalogue = series_catalogue()) {
       }
     )
     if (!is.null(fit)) {
-      database$TDLLHPP <- fit$TDRIFT
-      if (is.null(database$TLLHPP)) database$TLLHPP <- fit$TLEVEL
+      database[["TDLLHPP"]] <- fit$TDRIFT
+      if (is.null(database[["TLLHPP"]])) database[["TLLHPP"]] <- fit$TLEVEL
     }
   }
 
@@ -331,6 +384,361 @@ fit_random_walk_drift <- function(y_ts, sample_start, mprior_level,
     TLEVEL = ts_meta$as_bimets(tlevel_vec),
     TDRIFT = ts_meta$as_bimets(tdrift_vec)
   )
+}
+
+# ===========================================================================
+# Inflation expectations (PI_E) — port of pistar.prg
+# ===========================================================================
+
+#' Fit the 7-signal local-level model for PI_E
+#'
+#' Simplified KFAS port of `pistar.prg`. The full EViews model has an AR(1)
+#' correction on the DL4PTM signal and GST dummies on each survey
+#' equation; v0 drops both and treats the seven inflation indicators
+#' (year-on-year trimmed-mean CPI plus six survey/market-based
+#' expectation series) as direct noisy observations of a common trend
+#' inflation state `cpistar`:
+#'
+#'   y_t = (1, 1, 1, 1, 1, 1, 1)^T · cpistar_t + eps_t   eps ~ N(0, H)
+#'   cpistar_t = cpistar_{t-1} + eta_t                    eta ~ N(0, sigma_state^2)
+#'
+#' Free parameters: 7 observation sigmas + 1 state sigma, estimated by
+#' fitSSM. The state is initialised with a diffuse prior, so its
+#' smoothed value at t=1 is data-driven.
+#'
+#' Inputs from `database` (must all be present):
+#'   PTM        → DL4PTM = 100 * log(PTM_t / PTM_{t-4})
+#'   GBUSEXP, GUNIEXPY, GUNIEXPYY, GMAREXPY, GMAREXPYY  (RBA G3 survey series)
+#'   PI_E_BOND  → used as the GBONYLD signal (the raw bond-implied
+#'                inflation series in our catalogue)
+#'
+#' The estimation sample starts when at least one signal first has data;
+#' `sample_start` is the EViews `%firstdate` default (typically 1985Q4
+#' when PI_E_BOND first reports).
+#'
+#' @param database Named list of bimets TIMESERIES.
+#' @param sample_start `"YYYYQq"` string; first quarter to include.
+#' @return List with a single element `PI_E`: a bimets ts of the smoothed
+#'   trend inflation expectation, broadcast over the full database span.
+#' @keywords internal
+fit_pie_kfas <- function(database, sample_start = "1985Q4") {
+  SSMcustom <- KFAS::SSMcustom
+
+  signal_vars <- c("GBUSEXP", "GUNIEXPY", "GUNIEXPYY",
+                   "GMAREXPY", "GMAREXPYY", "PI_E_BOND")
+  for (v in signal_vars) {
+    if (is.null(database[[v]])) {
+      stop("fit_pie_kfas: missing input series ", v, call. = FALSE)
+    }
+  }
+  ts_meta <- ts_to_meta(database[["PTM"]])
+
+  # DL4PTM = 100 * log(PTM_t / PTM_{t-4}). NA for the first 4 quarters.
+  ptm_vec <- as.numeric(database[["PTM"]])
+  n_total <- length(ptm_vec)
+  dl4ptm  <- rep(NA_real_, n_total)
+  for (i in seq.int(5L, n_total)) {
+    if (!is.na(ptm_vec[i]) && !is.na(ptm_vec[i - 4L]) && ptm_vec[i - 4L] > 0) {
+      dl4ptm[i] <- 100 * (log(ptm_vec[i]) - log(ptm_vec[i - 4L]))
+    }
+  }
+
+  # Align each signal to the PTM time grid (the longest input).
+  align_to_ptm <- function(other_ts) {
+    other_tsp <- stats::tsp(other_ts)
+    other_v   <- as.numeric(other_ts)
+    other_y   <- floor(other_tsp[1] + 1e-9)
+    other_q   <- round((other_tsp[1] - other_y) * 4 + 1)
+    offset    <- (other_y - ts_meta$start_year) * 4L +
+                 (other_q - ts_meta$start_quarter)
+    out <- rep(NA_real_, n_total)
+    lo <- max(1L, 1L + offset)
+    hi <- min(n_total, length(other_v) + offset)
+    if (lo <= hi) {
+      out[lo:hi] <- other_v[(lo - offset):(hi - offset)]
+    }
+    out
+  }
+
+  Y <- cbind(
+    DL4PTM    = dl4ptm,
+    GBUSEXP   = align_to_ptm(database[["GBUSEXP"]]),
+    GUNIEXPY  = align_to_ptm(database[["GUNIEXPY"]]),
+    GUNIEXPYY = align_to_ptm(database[["GUNIEXPYY"]]),
+    GMAREXPY  = align_to_ptm(database[["GMAREXPY"]]),
+    GMAREXPYY = align_to_ptm(database[["GMAREXPYY"]]),
+    PI_E_BOND = align_to_ptm(database[["PI_E_BOND"]])
+  )
+  # KFAS rejects Inf/NaN in observations but accepts NA. PTM zeros from
+  # level_from_pct's pre-base quarters propagate to DL4PTM as Inf; mask
+  # them out (and any other non-finite cells defensively).
+  Y[!is.finite(Y)] <- NA_real_
+  n_sig <- ncol(Y)
+
+  # Mask quarters before sample_start.
+  start_idx <- ts_meta$quarter_index(sample_start)
+  if (start_idx > 1L) Y[seq_len(start_idx - 1L), ] <- NA_real_
+
+  # Seven-signal local-level: state is scalar cpistar.
+  # Initial mean = mean of available signals at first valid quarter (or 2.5).
+  first_obs <- Y[start_idx, ]
+  init_mean <- if (any(!is.na(first_obs))) mean(first_obs, na.rm = TRUE) else 2.5
+
+  model <- KFAS::SSModel(
+    Y ~ -1 + SSMcustom(
+      Z = matrix(rep(1, n_sig), nrow = n_sig, ncol = 1),
+      T = matrix(1),
+      R = matrix(1),
+      Q = matrix(0.1),
+      a1 = matrix(init_mean),
+      P1 = matrix(0.5),   # vprior_pie diagonal (0.5)
+      P1inf = matrix(0),
+      state_names = "cpistar"
+    ),
+    H = diag(rep(0.1, n_sig))
+  )
+
+  # 8 free parameters: 7 obs sigmas + 1 state sigma. All on log scale.
+  update_fn <- function(pars, model) {
+    obs_vars <- exp(pars[1:7])
+    state_var <- exp(pars[8])
+    model$H[, , 1] <- diag(obs_vars)
+    model$Q[, , 1] <- state_var
+    model
+  }
+  fit <- KFAS::fitSSM(model,
+                      inits = c(rep(log(1), 7), log(0.05)),
+                      updatefn = update_fn, method = "BFGS")
+  if (fit$optim.out$convergence != 0L) {
+    warning(sprintf("fit_pie_kfas: optim convergence code %d",
+                    fit$optim.out$convergence), call. = FALSE)
+  }
+  ks <- KFAS::KFS(fit$model, smoothing = "state")
+  pie_vec <- as.numeric(ks$alphahat[, "cpistar"])
+  if (start_idx > 1L) pie_vec[seq_len(start_idx - 1L)] <- NA_real_
+  list(PI_E = ts_meta$as_bimets(pie_vec))
+}
+
+# ===========================================================================
+# NAIRU (TLUR) — port of nairu.prg
+# ===========================================================================
+
+#' Fit the NAIRU state-space (TLUR)
+#'
+#' KFAS port of `nairu.prg`. The full EViews model is a 2-signal Phillips
+#' curve + unit-labour-cost system with NAIRU as the state. Many lagged
+#' regressors are pre-estimated via OLS in the EViews script; we mirror
+#' that two-step structure:
+#'
+#'   1. Use HP-smoothed LUR as an initial NAIRU guess.
+#'   2. Pre-estimate the Phillips-curve slope coefficients (gamma_1,
+#'      gamma_2) via OLS using the HP-smoothed NAIRU.
+#'   3. Run KFAS with those gammas fixed to extract a smoothed NAIRU
+#'      state.
+#'
+#' Simplified signal equations (no Okun-law unemployment-change term,
+#' no import-price pass-through, no lagged inflation autoregression —
+#' v0 keeps the core Phillips-curve relationship between unemployment
+#' gap and inflation):
+#'
+#'   dlptm_t = pi_eq_t + gamma_1 * (LUR_t - NAIRU_t) + e1
+#'   dlulc_t = pi_eq_t + gamma_2 * (LUR_t - NAIRU_t) + e2
+#'   NAIRU_t = NAIRU_{t-1} + e3
+#'
+#' Where pi_eq_t = ((1 + PI_E_t/100)^(1/4) - 1) * 100 is the quarterly
+#' inflation-expectation rate. The pre-subtracted observations are:
+#'
+#'   y1_t - gamma_1 * LUR_t = -gamma_1 * NAIRU_t + e1
+#'
+#' which is a linear state-space with constant Z = -gamma_1 once
+#' gamma_1 is fixed.
+#'
+#' @param database Named list of bimets ts (needs PTM, NHCOE, Y, LUR;
+#'   PI_E recommended).
+#' @param sample_start `"YYYYQq"` string.
+#' @return List with `TLUR` (smoothed NAIRU as bimets ts).
+#' @keywords internal
+fit_nairu_kfas <- function(database, sample_start = "1986Q3") {
+  SSMcustom <- KFAS::SSMcustom
+
+  ts_meta <- ts_to_meta(database[["LUR"]])
+  n_total <- length(as.numeric(database[["LUR"]]))
+
+  # Align all inputs to the LUR time grid.
+  align <- function(x) {
+    other_tsp <- stats::tsp(x)
+    other_v   <- as.numeric(x)
+    other_y   <- floor(other_tsp[1] + 1e-9)
+    other_q   <- round((other_tsp[1] - other_y) * 4 + 1)
+    offset    <- (other_y - ts_meta$start_year) * 4L +
+                 (other_q - ts_meta$start_quarter)
+    out <- rep(NA_real_, n_total)
+    lo <- max(1L, 1L + offset)
+    hi <- min(n_total, length(other_v) + offset)
+    if (lo <= hi) out[lo:hi] <- other_v[(lo - offset):(hi - offset)]
+    out
+  }
+  lur   <- as.numeric(database[["LUR"]])
+  ptm   <- align(database[["PTM"]])
+  nhcoe <- align(database[["NHCOE"]])
+  y_gdp <- align(database[["Y"]])
+  pi_e  <- if (!is.null(database[["PI_E"]])) align(database[["PI_E"]]) else rep(2.5, n_total)
+
+  # dlptm = 100 * dlog(PTM), dlulc = 100 * dlog(NHCOE/Y).
+  dlptm <- c(NA, 100 * diff(log(ptm)))
+  ulc   <- nhcoe / y_gdp
+  dlulc <- c(NA, 100 * diff(log(ulc)))
+  pi_eq <- ((1 + pi_e / 100) ^ (1 / 4) - 1) * 100
+
+  start_idx <- ts_meta$quarter_index(sample_start)
+  if (is.na(start_idx) || start_idx < 1L) start_idx <- 1L
+
+  # Step 1: HP-smoothed LUR as initial NAIRU guess. KFAS makes this a
+  # local-linear-trend with no observation noise; equivalent to HP filter
+  # with lambda = 1 / (signal-to-noise ratio). For simplicity, we just
+  # take a centred moving average over 20 quarters as the seed.
+  win <- 20L
+  lur_sm <- stats::filter(lur, rep(1 / win, win), sides = 2)
+  lur_sm <- as.numeric(lur_sm)
+  # Fill ends by carrying nearest non-NA forward / backward.
+  nonna <- which(!is.na(lur_sm))
+  if (length(nonna)) {
+    lur_sm[seq_len(nonna[1] - 1L)] <- lur_sm[nonna[1]]
+    lur_sm[(tail(nonna, 1) + 1L):n_total] <- lur_sm[tail(nonna, 1)]
+  }
+
+  # Step 2: OLS pre-estimate of gamma_1, gamma_2.
+  mask <- seq.int(start_idx, n_total)
+  lhs_ptm <- dlptm[mask] - pi_eq[mask]
+  lhs_ulc <- dlulc[mask] - pi_eq[mask]
+  ugap    <- lur[mask] - lur_sm[mask]
+
+  # is.finite (not !is.na) — PTM = 0 at level_from_pct pre-base quarters
+  # yields Inf in dlptm, which is_na ignores but lm() chokes on.
+  ok_ptm <- is.finite(lhs_ptm) & is.finite(ugap)
+  ok_ulc <- is.finite(lhs_ulc) & is.finite(ugap)
+  gamma_1 <- if (sum(ok_ptm) > 5L) {
+    coef(stats::lm(lhs_ptm[ok_ptm] ~ ugap[ok_ptm] - 1))[1]
+  } else -0.1
+  gamma_2 <- if (sum(ok_ulc) > 5L) {
+    coef(stats::lm(lhs_ulc[ok_ulc] ~ ugap[ok_ulc] - 1))[1]
+  } else -0.1
+
+  # Step 3: KFAS smoother with gammas fixed.
+  # Modified observations: y1_mod = (dlptm - pi_eq) - gamma_1 * LUR.
+  # Signal equation:  y1_mod = -gamma_1 * NAIRU + e1.
+  y1 <- (dlptm - pi_eq) - gamma_1 * lur
+  y2 <- (dlulc - pi_eq) - gamma_2 * lur
+  Y  <- cbind(y1 = y1, y2 = y2)
+  # PTM = 0 at pre-base quarters of level_from_pct yields Inf in dlptm;
+  # mask non-finite cells to NA (KFAS treats NA as missing observation).
+  Y[!is.finite(Y)] <- NA_real_
+  if (start_idx > 1L) Y[seq_len(start_idx - 1L), ] <- NA_real_
+
+  # Initial NAIRU near 5.5 (literature value used by EViews mprior).
+  init_nairu <- if (!is.na(lur_sm[start_idx])) lur_sm[start_idx] else 5.5
+
+  model <- KFAS::SSModel(
+    Y ~ -1 + SSMcustom(
+      Z = matrix(c(-gamma_1, -gamma_2), nrow = 2, ncol = 1),
+      T = matrix(1),
+      R = matrix(1),
+      Q = matrix(0.1),
+      a1 = matrix(init_nairu),
+      P1 = matrix(0.4),
+      P1inf = matrix(0),
+      state_names = "NAIRU"
+    ),
+    H = diag(c(0.1, 0.1))
+  )
+
+  update_fn <- function(pars, model) {
+    model$H[1, 1, 1] <- exp(pars[1])
+    model$H[2, 2, 1] <- exp(pars[2])
+    model$Q[1, 1, 1] <- exp(pars[3])
+    model
+  }
+  fit <- KFAS::fitSSM(model, inits = c(log(0.1), log(0.1), log(0.05)),
+                      updatefn = update_fn, method = "BFGS")
+  if (fit$optim.out$convergence != 0L) {
+    warning(sprintf("fit_nairu_kfas: optim convergence code %d",
+                    fit$optim.out$convergence), call. = FALSE)
+  }
+  ks <- KFAS::KFS(fit$model, smoothing = "state")
+  tlur_vec <- as.numeric(ks$alphahat[, "NAIRU"])
+  if (start_idx > 1L) tlur_vec[seq_len(start_idx - 1L)] <- NA_real_
+  list(TLUR = ts_meta$as_bimets(tlur_vec))
+}
+
+# ===========================================================================
+# Neutral rate (RSTAR) — simplified port of rstar.prg
+# ===========================================================================
+
+#' Fit the neutral interest rate (RSTAR) state-space
+#'
+#' v0 simplification of `rstar.prg`. The full EViews model is an 11-state
+#' system (output gap with 3 lags, potential GDP, trend growth, NAIRU
+#' with 1 lag, neutral rate with 1 lag, and an unexplained-rate state z)
+#' tied together by Okun's-law and Phillips-curve signal equations.
+#' That's a session unto itself.
+#'
+#' For v0 we model RSTAR as the smoothed trend of the real cash rate:
+#'
+#'   rcash_t = NCR_t - 4 * 100 * dlog(PTM)_t
+#'   y_t      = TLEVEL_t + eps_t                     eps ~ N(0, sigma_obs)
+#'   TLEVEL_t = TLEVEL_{t-1} + TDRIFT_{t-1} + eta1   eta1 ~ N(0, q1)
+#'   TDRIFT_t = TDRIFT_{t-1} + eta2                  eta2 ~ N(0, q2)
+#'
+#' RSTAR = TLEVEL (the trend real cash rate). Justification: in the long
+#' run the cash rate equals the neutral rate plus an output-gap response,
+#' so smoothing rcash filters out the cyclical component. This loses
+#' rstar.prg's z-state (additional unexplained rstar drift) but captures
+#' the dominant slow movement.
+#'
+#' @param database Named list of bimets ts (needs NCR, PTM).
+#' @param sample_start `"YYYYQq"` string.
+#' @return List with `RSTAR` (smoothed neutral real cash rate, bimets ts).
+#' @keywords internal
+fit_rstar_kfas <- function(database, sample_start = "1986Q3") {
+  ts_meta <- ts_to_meta(database[["NCR"]])
+  n_total <- length(as.numeric(database[["NCR"]]))
+
+  align <- function(x) {
+    other_tsp <- stats::tsp(x)
+    other_v   <- as.numeric(x)
+    other_y   <- floor(other_tsp[1] + 1e-9)
+    other_q   <- round((other_tsp[1] - other_y) * 4 + 1)
+    offset    <- (other_y - ts_meta$start_year) * 4L +
+                 (other_q - ts_meta$start_quarter)
+    out <- rep(NA_real_, n_total)
+    lo <- max(1L, 1L + offset)
+    hi <- min(n_total, length(other_v) + offset)
+    if (lo <= hi) out[lo:hi] <- other_v[(lo - offset):(hi - offset)]
+    out
+  }
+  ncr <- as.numeric(database[["NCR"]])
+  ptm <- align(database[["PTM"]])
+  # Mask non-positive PTM (e.g. pre-base quarters of level_from_pct) before
+  # taking log/diff, else dlptm gets -Inf and propagates to rcash.
+  ptm[!is.na(ptm) & ptm <= 0] <- NA_real_
+  dlptm <- c(NA, diff(log(ptm))) * 100
+  rcash <- ncr - 4 * dlptm
+  rcash[!is.finite(rcash)] <- NA_real_
+
+  rcash_ts <- ts_meta$as_bimets(rcash)
+  # param_trend = 1600 (HP-filter-like smoothing) — rcash is very noisy
+  # quarter-to-quarter; with param_trend = 100 the smoother chases the
+  # spikes and produces an unreasonably volatile TLEVEL.
+  fit_llt <- fit_local_linear_trend(
+    y_ts         = rcash_ts,
+    sample_start = sample_start,
+    mprior       = c(3.0, 0),    # ~3% neutral real cash rate (Aus historical avg)
+    vprior       = c(0.5, 0.01),
+    param_trend  = 1600,
+    param_drift  = 16000,
+    param_name   = "rcash"
+  )
+  list(RSTAR = fit_llt$TLEVEL)
 }
 
 # Internal: extract the bimets ts metadata needed to round-trip a numeric

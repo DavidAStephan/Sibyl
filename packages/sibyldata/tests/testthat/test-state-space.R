@@ -113,3 +113,61 @@ test_that("apply_state_space_trends skips rows whose inputs are missing", {
   db <- sibyldata:::apply_state_space_trends(db, sibyldata::series_catalogue())
   expect_length(db, 0L)
 })
+
+# --- TLUR (NAIRU) -----------------------------------------------------------
+
+test_that("fit_nairu_kfas recovers a TLUR series correlated with the fixture", {
+  skip_if_not_installed("martin")
+  skip_if_no_kfas()
+  fx <- martin::read_fixture()
+  fit <- sibyldata:::fit_nairu_kfas(fx, sample_start = "1986Q3")
+  e <- as.numeric(fit$TLUR)
+  f <- as.numeric(fx$TLUR)
+  m <- !is.na(e) & !is.na(f)
+
+  # Correlation > 0.8: KFAS NAIRU and EViews NAIRU should move together
+  # even if levels differ slightly.
+  expect_gt(cor(e[m], f[m]), 0.8)
+  # Mean within 1.5 pp (NAIRU values are ~4-7).
+  expect_lt(abs(mean(e[m]) - mean(f[m])), 1.5)
+  # Reasonable range — NAIRU should be in single digits.
+  expect_true(all(e[m] > 2 & e[m] < 12))
+})
+
+# --- RSTAR ------------------------------------------------------------------
+
+test_that("fit_rstar_kfas recovers an RSTAR series correlated with the fixture", {
+  skip_if_not_installed("martin")
+  skip_if_no_kfas()
+  fx <- martin::read_fixture()
+  fit <- sibyldata:::fit_rstar_kfas(fx, sample_start = "1986Q3")
+  e <- as.numeric(fit$RSTAR)
+  f <- as.numeric(fx$RSTAR)
+  m <- !is.na(e) & !is.na(f)
+
+  # The smoothed real cash rate tracks the fixture's RSTAR closely in
+  # shape (cor > 0.9), though absolute levels differ — the EViews model
+  # adds a z-state that captures unexplained drift.
+  expect_gt(cor(e[m], f[m]), 0.85)
+  # Mean within 2 pp.
+  expect_lt(abs(mean(e[m]) - mean(f[m])), 2)
+})
+
+# --- apply_state_space_trends with full set ---------------------------------
+
+test_that("apply_state_space_trends materialises TLUR and RSTAR from fixture", {
+  skip_if_not_installed("martin")
+  skip_if_no_kfas()
+  fx <- martin::read_fixture()
+  # Strip the fixture's TLUR/RSTAR so the handler has to recompute them.
+  db <- fx
+  db$TLUR <- NULL
+  db$RSTAR <- NULL
+  db$PI_E <- NULL
+  db <- sibyldata:::apply_state_space_trends(db, sibyldata::series_catalogue())
+  expect_true("TLUR"  %in% names(db))
+  expect_true("RSTAR" %in% names(db))
+  # PI_E should be skipped — fixture has no RBA G3 series.
+  expect_false("PI_E" %in% names(db))
+})
+

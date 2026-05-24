@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **380 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **388 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -181,19 +181,51 @@ KFAS estimates only "win" over the fixture when live ABS data extends
 beyond 2019Q3 — currently `TDLLA` only (ABS LA goes through ~2026Q1).
 The pipeline solves end-to-end with the new live trends in the path.
 
-**Remaining state-space models (~1 session):**
+**Remaining state-space models: all six trends now have v0 KFAS ports.**
 
-- **`PI_E`** — inflation expectations from 7-signal model
-  ([pistar.prg](references/MARTIN-master/Programs/pistar.prg)).
-- **`TLUR`** — NAIRU from 2-signal Phillips curve + ULC model
-  ([nairu.prg](references/MARTIN-master/Programs/nairu.prg)).
-- **`RSTAR`** — neutral interest rate from 11-state model
-  ([rstar.prg](references/MARTIN-master/Programs/rstar.prg)). The
-  most complex of the bunch.
+- ~~**`PI_E`**~~ **DONE (v0)** — 7-signal local-level KFAS port of
+  [pistar.prg](references/MARTIN-master/Programs/pistar.prg). Drops
+  the AR(1) correction on DL4PTM and GST dummies on surveys; treats
+  the seven inflation indicators (DL4PTM + 5 RBA G3 surveys + bond
+  expectations PI_E_BOND) as common-trend noisy observations.
+  Added 5 RBA G3 series to the catalogue (GBUSEXP, GUNIEXPY,
+  GUNIEXPYY, GMAREXPY, GMAREXPYY).
+- ~~**`TLUR`**~~ **DONE (v0)** — 1-state Phillips-curve port of
+  [nairu.prg](references/MARTIN-master/Programs/nairu.prg) with
+  two-step OLS-pre-estimate + KFAS smoother. Simplifies signals to
+  the core (dlptm - pi_eq) and (dlulc - pi_eq) on (LUR - NAIRU),
+  dropping the lagged-inflation autoregression and import-price
+  pass-through. Mean ~6.15% vs fixture 5.24%.
+- ~~**`RSTAR`**~~ **DONE (v0)** — smoothed real cash rate via KFAS
+  local-linear-trend on `NCR - 4 * 100 * dlog(PTM)`. NOT a faithful
+  port of [rstar.prg](references/MARTIN-master/Programs/rstar.prg)'s
+  11-state Okun-Phillips model — that's a session unto itself; the
+  v0 captures the slow movement of real rates. Mean ~2.27% vs
+  fixture 3.04%.
 
-These also require supporting input series that may not be in the
-catalogue yet (bond-implied inflation, survey expectations,
-unit-labour-cost growth) — those would be added alongside the port.
+Two bug fixes shipped alongside:
+
+1. `cumulate_pct_to_level` previously returned the raw percent series
+   unchanged when the base quarter (1982Q1) preceded the live ts
+   start (live PTM begins 1982Q2). Now it cumulates from the first
+   available quarter with the catalogued base value as the implicit
+   pre-base level — accepts a small index-level error for the gap
+   quarters in exchange for a working level index.
+2. `apply_state_space_trends`'s condition checks used `database$X`
+   which R partial-matches: `database$PI_E` was silently returning
+   `database$PI_E_BOND` (preventing the PI_E fit from running and
+   feeding bond yields into TLUR's pi_eq calculation). Switched all
+   ambiguous lookups to `[["X"]]` for exact matching.
+
+Future fidelity improvements for the v0 ports:
+
+- Re-add the AR(1) correction on DL4PTM and the GST dummies for PI_E.
+- Restore the lagged-inflation autoregression and import-price
+  pass-through for TLUR (would require pre-estimating more
+  coefficients via OLS).
+- Port rstar.prg's 11-state model faithfully (output gap + 3 lags,
+  potential GDP + trend growth, NAIRU + 1 lag, neutral rate + 1 lag,
+  z) — a session of its own.
 
 ### C. Nowcast monthly bridge equations (~½ session)
 

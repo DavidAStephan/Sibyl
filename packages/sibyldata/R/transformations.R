@@ -60,6 +60,13 @@ apply_level_from_pct <- function(database, catalogue) {
 # given (base, base_quarter). Quarters strictly before base_quarter become
 # NA; the base quarter takes the base value; subsequent quarters multiply
 # by (1 + pct/100) compounded.
+#
+# When `base_quarter` falls before the start of `pct_ts` (e.g. live data
+# starts after the catalogued base), we still cumulate the level: the
+# first quarter of `pct_ts` is treated as if the base value had been
+# compounded forward by the first pct change. This loses information for
+# the gap quarters between base_quarter and ts start (we have no pct
+# values there) but keeps the index consistent with the catalogued base.
 cumulate_pct_to_level <- function(pct_ts, base, base_quarter) {
   yq <- parse_yyyyQq(base_quarter)
   base_dec <- yq$year + (yq$quarter - 1) / 4
@@ -74,15 +81,29 @@ cumulate_pct_to_level <- function(pct_ts, base, base_quarter) {
 
   out <- rep(NA_real_, n)
   base_idx <- which(abs(times - base_dec) < 1e-6)
-  if (length(base_idx) == 0L) return(pct_ts)  # base outside ts range
-  out[base_idx] <- base
 
-  if (base_idx < n) {
-    for (i in seq(base_idx + 1L, n)) {
-      pct <- vals[i]
-      out[i] <- if (is.na(pct) || is.na(out[i - 1])) NA_real_
-                else out[i - 1] * (1 + pct / 100)
+  if (length(base_idx) > 0L) {
+    # Standard case: base_quarter is in the ts.
+    out[base_idx] <- base
+    start_recursion <- base_idx + 1L
+  } else if (base_dec < start_dec) {
+    # base_quarter precedes the ts: cumulate from start_dec as base *
+    # (1 + first_pct/100) — pretend the gap quarters had no contribution.
+    if (!is.na(vals[1])) {
+      out[1] <- base * (1 + vals[1] / 100)
+      start_recursion <- 2L
+    } else {
+      return(pct_ts)
     }
+  } else {
+    # base_quarter is after the ts end — can't cumulate from inside the ts.
+    return(pct_ts)
+  }
+
+  for (i in seq(start_recursion, n)) {
+    pct <- vals[i]
+    out[i] <- if (is.na(pct) || is.na(out[i - 1])) NA_real_
+              else out[i - 1] * (1 + pct / 100)
   }
 
   start_year    <- floor(start_dec + 1e-9)

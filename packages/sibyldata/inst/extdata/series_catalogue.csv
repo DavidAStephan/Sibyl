@@ -211,3 +211,11 @@ TDLLPOP,derived,NA,NA,Q,NA,state_space,Trend dlog population from KFAS local-lin
 TLLPOP,derived,NA,NA,Q,NA,state_space,Trend log population (level) smoothed state from ss_lpop,Log persons,NA
 TDLLHPP,derived,NA,NA,Q,NA,state_space,Trend dlog hours per person (constant) from KFAS random-walk-plus-drift on log(LHPP); port of supply_side.prg ss_lhpp,Per quarter,NA
 TLLHPP,derived,NA,NA,Q,NA,state_space,Trend log hours per person (level) smoothed state from ss_lhpp,Log hours,NA
+GBUSEXP,rba,G03_GBUSEXP,G03,Q,NA,direct,RBA survey measure of business inflation expectations (year-ahead),Percent,NA
+GUNIEXPY,rba,G03_GUNIEXPY,G03,Q,NA,direct,RBA survey of union officials' inflation expectations (year-ahead),Percent,NA
+GUNIEXPYY,rba,G03_GUNIEXPYY,G03,Q,NA,direct,RBA survey of union officials' inflation expectations (longer-horizon),Percent,NA
+GMAREXPY,rba,G03_GMAREXPY,G03,Q,NA,direct,RBA survey of market economists' inflation expectations (year-ahead),Percent,NA
+GMAREXPYY,rba,G03_GMAREXPYY,G03,Q,NA,direct,RBA survey of market economists' inflation expectations (longer-horizon),Percent,NA
+PI_E,derived,NA,NA,Q,NA,state_space,Inflation expectations from 7-signal local-level KFAS port of pistar.prg; trend extracted from DL4PTM + 5 RBA surveys + bond-implied expectations,Percent,NA
+TLUR,derived,NA,NA,Q,NA,state_space,NAIRU from 2-signal Phillips-curve state-space; OLS-pre-estimated gammas with KFAS smoother on (LUR - NAIRU); v0 port of nairu.prg,Percent,NA
+RSTAR,derived,NA,NA,Q,NA,state_space,Neutral real cash rate from KFAS local-linear-trend smoother on real cash rate (NCR - 4*dlog(PTM)*100); v0 simplification of rstar.prg's 11-state model,Percent per annum,NA
