@@ -112,11 +112,67 @@ if Quarto isn't on PATH.
 
 ---
 
-## What's next — in priority order
+## What to pick up next
 
-These are the items left over from the last autonomous session,
-ranked by leverage. Pick whichever you have appetite for; each is
-independent.
+Ranked by leverage. Each item is independent — pick whichever you
+have appetite for.
+
+### 1. Faithful 11-state RSTAR port (~1 session)
+
+The current RSTAR is a smoothed real cash rate via KFAS local-linear-
+trend (`fit_rstar_kfas` in
+[state_space.R](packages/sibyldata/R/state_space.R)). It's
+operational but it's not the Okun-Phillips state-space estimate from
+[rstar.prg](references/MARTIN-master/Programs/rstar.prg) — that's an
+11-state system (output gap + 3 lags, potential GDP, trend growth,
+NAIRU + 1 lag, neutral rate + 1 lag, unexplained z-state) tied
+together by Okun's-law and Phillips-curve signal equations. Worth
+porting properly because RSTAR feeds NCR (the Taylor Rule) directly.
+
+The KFAS infrastructure is already in place from the three TDLL ports
+and PI_E/TLUR, so this is mostly a faithful translation of the SS
+matrix definitions.
+
+### 2. NBR splice extension (~½ session)
+
+The live RBR and IBCR identities only have ~27 observations because
+live NBR (business borrowing rate) is short — the
+[transformations.R splice](packages/sibyldata/R/transformations.R)
+combines NBR with NBR_HIST but the combined history is still shorter
+than the fixture's. Either (a) extend the NBR splice further back
+into history using ABS or RBA legacy series, or (b) add an additional
+fallback rate source. After this lands, live RBR and IBCR would win
+the merge for the historical period too, removing the last RBR/IBCR
+fixture dependency.
+
+### 3. PI_E / TLUR fidelity restoration (~½ session)
+
+Both v0 ports dropped some structure for tractability. Restore:
+
+- **PI_E** — AR(1) correction on DL4PTM and the five GST dummies on
+  survey signals (currently dropped — see `fit_pie_kfas` docstring in
+  [state_space.R](packages/sibyldata/R/state_space.R)).
+- **TLUR** — lagged-inflation autoregression and import-price pass-
+  through in the Phillips curve signal. Requires pre-estimating more
+  coefficients via OLS, similar to the existing two-step `gamma_1`,
+  `gamma_2` machinery.
+
+### 4. Nowcast bridge equations (~½ session)
+
+`nowcast::nowcast_handover()` is currently univariate ARIMA per
+variable, recovering 82 % of headline aggregates within 5 % mean
+relative error against the fixture. Adding `method = "bridge"` that
+regresses quarterly outcomes on contemporaneous monthly LFS / retail
+trade / building approvals indicators (now available from live ABS)
+would close the remaining gap. The function signature already
+accommodates this.
+
+---
+
+## What's been done
+
+History of the major workstreams that have landed. Each is fully
+operational and tested; details below.
 
 ### A. Live-data coverage push — DONE
 
