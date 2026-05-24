@@ -121,6 +121,12 @@ to_martin_database <- function(raw, frequency = "Q") {
   db <- apply_splices(db, cat)
   db <- apply_chowlin(db, annual_db, cat)
   db <- apply_pim(db, cat)
+  # IBCTR and IBNDR are deterministic/static inputs needed by the IBCR
+  # identity chain; populate before add_derived_series so the IBNDRA /
+  # RBR / IBCR formulas can evaluate.
+  db <- apply_ibctr(db, cat)
+  db <- apply_ibndr(db, cat)
+  db <- apply_iad_weights(db, cat)
   db <- add_derived_series(db, cat)
   # State-space trends depend on LHPP being derived (HOURS / LE * 3),
   # so they run after add_derived_series.

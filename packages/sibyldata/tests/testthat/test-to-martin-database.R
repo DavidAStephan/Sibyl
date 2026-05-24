@@ -59,9 +59,17 @@ test_that("to_martin_database() ignores series not in the catalogue", {
     vintage   = Sys.Date()
   )
   out <- to_martin_database(panel)
-  # Only deterministic calendar series (dummies + scalars) materialise from
-  # an empty data panel; nothing data-derived is added.
+  # No data-derived series should materialise from an unknown source_id.
+  # The deterministic calendar series (dummies / scalars / identity-chain
+  # rows like IBCTR, IBNDR, IAD weights) all appear, plus any derived
+  # rows whose inputs are themselves deterministic (e.g. IBNDRA = sum of
+  # IBNDR lags is computable from the static IBNDR placeholder).
   cat <- series_catalogue()
-  calendar_only <- cat$martin_var[cat$transformation %in% c("dummy", "scalar")]
-  expect_setequal(names(out), calendar_only)
+  calendar_only <- cat$martin_var[cat$transformation %in%
+                                    c("dummy", "scalar", "identity")]
+  expect_true(all(calendar_only %in% names(out)),
+              info = paste("missing calendar rows:",
+                           paste(setdiff(calendar_only, names(out)),
+                                 collapse = ", ")))
+  expect_false("NC" %in% names(out))  # nothing from the data panel itself
 })

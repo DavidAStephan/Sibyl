@@ -22,7 +22,7 @@ test_that("catalogue source values are from the allowed enum", {
 test_that("catalogue transformation values are from the allowed enum", {
   cat <- series_catalogue()
   allowed <- c("direct", "spliced", "chowlin", "level_from_pct", "derived",
-               "dummy", "scalar", "state_space")
+               "dummy", "scalar", "state_space", "identity")
   expect_true(all(cat$transformation %in% allowed))
 })
 
