@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **432 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **440 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -156,22 +156,42 @@ Both v0 ports now have the dropped structure restored:
   omega_{1..2} (lagged ULC AR). All pre-OLS-estimated; pre-subtracted
   before KFAS sees the modified observations.
 
-### 3. Nowcast bridge equations — PARTIAL
+### 3. Nowcast bridge equations — DONE
 
-`nowcast::nowcast_handover()` now supports `method = "bridge"`
-(AR(1) + seasonal-AR(1) ARIMA with auto-differencing). It's a step
-above naive but isn't yet a "true" monthly-indicator bridge —
-that requires exposing monthly data separately to nowcast (current
-pipeline aggregates upstream).
+True monthly-indicator bridge equations now ship via
+`nowcast::nowcast_handover(method = "bridge_monthly", ...)`.
+Architecture:
 
-Follow-up paths:
-- Surface monthly indicator series (`LE`, `RT_*`, `HOURS`, etc.) in
-  a separate slot of the database that nowcast can read independently
-  of the quarterly aggregates.
-- Add a curated indicators map: target → monthly indicator series
-  (e.g. RC → retail trade, ID → building approvals).
-- Implement true bridge regression: aggregate partial-quarter
-  monthly data, fit lm(quarterly_target ~ partial_quarterly_avg).
+- `sibyldata::nowcast_monthly_indicators(panel, vars)` exposes raw
+  monthly catalogue series as bimets `FREQ=12` time series (parallel
+  to the quarterly database the main pipeline produces).
+- `nowcast_handover` gains a `bridge_indicators` argument (target →
+  indicator name map) plus a `monthly_indicators` argument. Targets
+  with no mapped indicator fall back to ARIMA gracefully.
+- `forecast_one_bridge_monthly()` aggregates the monthly indicator
+  to per-quarter buckets (mean), fits `lm(target ~ indicator)` on
+  the full-quarter (3-month) historical subset, then predicts the
+  forecast quarter using whatever partial-quarter indicator months
+  are already available. Falls back to ARIMA if OLS fit is degenerate
+  or no indicator data covers the forecast horizon.
+- Added catalogue row for `RT` (ABS 8501.0 retail trade total
+  turnover seasonally adjusted, monthly) as the canonical
+  consumption indicator. HOURS and LE are existing monthly rows.
+
+Live demo (`scripts/monthly_bridge_demo.R`) shows the bridges in
+action on current ABS data. Bridge revisions vs ARIMA baseline:
+
+  RC ← RT     : +7.4% (retail trade leading consumption higher)
+  Y  ← HOURS  : +4.4-5.5% (hours-worked growth)
+  LE ← LE     : -0.4-0.8% (trivial bridge, ~unchanged)
+
+Tests: 7 new unit tests + 1 catalogue-rule test.
+
+Follow-up ideas (none required for v0):
+- Add building approvals → ID, capex → IB indicator mappings
+- Wire the bridge into `_targets.R` so `tar_make()` picks
+  bridge_monthly when monthly data is fresher than quarterly
+- AR(1) error term on the bridge regression for better intervals
 
 ### 4. Faithful state-space accuracy (~1 session)
 
@@ -482,6 +502,15 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Monthly-indicator bridge equations** — adds
+  `sibyldata::nowcast_monthly_indicators()` to surface raw monthly
+  series alongside the quarterly database; adds
+  `method = "bridge_monthly"` to `nowcast_handover` with
+  `bridge_indicators` + `monthly_indicators` arguments and
+  graceful fallback to ARIMA. Adds the RT (ABS 8501.0 retail
+  trade) monthly catalogue row. Live demo confirms RT → RC bridge
+  revises consumption nowcast +7.4% over ARIMA baseline; HOURS → Y
+  revises real GDP nowcast +4-5%.
 - **Plausibility tests + end-to-end round walkthrough** — codifies
   economic priors as testthat checks (`test-plausibility.R`,
   32 cases against the fixture solve); ships a live-pipeline

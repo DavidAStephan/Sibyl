@@ -4,20 +4,23 @@
 #' simple univariate model (per `method`), and produces forecasts for the
 #' next `h` quarters past the last observed value. Returns a tidy tibble.
 #'
-#' Method options (delegated to `fable`):
+#' Method options (delegated to `fable` except `"bridge_monthly"`):
 #'
 #' - `"arima"`  — `fable::ARIMA()` (default; auto-orders).
 #' - `"ets"`    — `fable::ETS()`.
 #' - `"naive"`  — random walk (`fable::NAIVE()`).
-#' - `"bridge"` — linear regression on AR(1), AR(4), and a linear
-#'   trend via `fable::TSLM()`. Cheaper than full ARIMA but captures
-#'   the year-on-year seasonal and within-year persistence that
-#'   most National-Accounts components show. A true monthly-
-#'   indicator bridge (e.g. retail trade → quarterly consumption)
-#'   needs exposing monthly data separately to nowcast (the current
-#'   pipeline aggregates to quarterly upstream); this `"bridge"`
-#'   method is the multivariate-linear chassis those future
-#'   bridges would slot into.
+#' - `"bridge"` — `fable::ARIMA` constrained to AR(1) + seasonal
+#'   AR(1) with auto-chosen differencing. Cheaper than full auto
+#'   ARIMA but captures within-year persistence + seasonality.
+#' - `"bridge_monthly"` — true monthly-indicator bridge: regress the
+#'   quarterly target on a quarterly aggregate of a monthly indicator
+#'   (e.g. HOURS → Y, RT → RC), then predict the forecast quarter
+#'   using a **partial-quarter** average of whatever months of the
+#'   indicator are already available. Requires the `bridge_indicators`
+#'   argument mapping target codes to indicator codes, and the
+#'   monthly indicators themselves in the `monthly_indicators`
+#'   argument (typically from
+#'   `sibyldata::nowcast_monthly_indicators()`).
 #'
 #' Ragged-edge handling: each variable is forecast from its own last
 #' observed quarter, so series that lag (e.g. National Accounts) get more
@@ -38,9 +41,11 @@
 nowcast_handover <- function(database,
                               h         = 2,
                               method    = c("arima", "ets", "naive",
-                                            "bridge"),
+                                            "bridge", "bridge_monthly"),
                               variables = NULL,
-                              level     = 80) {
+                              level     = 80,
+                              bridge_indicators = NULL,
+                              monthly_indicators = NULL) {
   method <- match.arg(method)
   if (!is.list(database) || length(database) == 0L) {
     stop("`database` must be a non-empty named list of bimets time series.",
@@ -54,10 +59,34 @@ nowcast_handover <- function(database,
     stop("Database is missing handover variables: ",
          paste(missing_vars, collapse = ", "), call. = FALSE)
   }
+  if (method == "bridge_monthly") {
+    if (is.null(bridge_indicators) || is.null(monthly_indicators)) {
+      stop("method = 'bridge_monthly' requires both `bridge_indicators` ",
+           "(a named list/character vector mapping target codes to ",
+           "indicator names) and `monthly_indicators` (a named list of ",
+           "monthly bimets ts, typically from ",
+           "`sibyldata::nowcast_monthly_indicators()`).", call. = FALSE)
+    }
+  }
 
   out_rows <- purrr::map(variables, function(var) {
     ts <- database[[var]]
-    forecast_one(ts, variable = var, h = h, method = method, level = level)
+    if (method == "bridge_monthly") {
+      indicator_name <- bridge_indicators[[var]]
+      if (is.null(indicator_name) || is.null(monthly_indicators[[indicator_name]])) {
+        # No indicator mapped or indicator missing → fall back to ARIMA.
+        return(forecast_one(ts, variable = var, h = h,
+                            method = "arima", level = level))
+      }
+      forecast_one_bridge_monthly(
+        target_ts = ts, variable = var,
+        indicator_ts = monthly_indicators[[indicator_name]],
+        indicator_name = indicator_name,
+        h = h, level = level
+      )
+    } else {
+      forecast_one(ts, variable = var, h = h, method = method, level = level)
+    }
   })
   dplyr::bind_rows(out_rows)
 }
@@ -110,6 +139,121 @@ forecast_one <- function(ts, variable, h, method, level) {
     upper    = hi_vec$upper,
     method   = method
   )
+}
+
+# Monthly-indicator bridge forecast. Aggregates the indicator's full
+# historical months to quarterly means, fits OLS target ~ indicator on
+# overlapping quarters, then predicts the next `h` target quarters using
+# whatever months of the indicator are available (1, 2, or 3 months per
+# quarter — partial quarters get the partial mean as their indicator
+# value). Falls back to a naive last-value forecast if the OLS fit is
+# degenerate or no indicator data covers the forecast horizon.
+forecast_one_bridge_monthly <- function(target_ts, variable,
+                                        indicator_ts, indicator_name,
+                                        h, level) {
+  if (is.null(indicator_ts) || length(as.numeric(indicator_ts)) == 0L) {
+    return(forecast_one(target_ts, variable, h, "arima", level))
+  }
+
+  # ---- Aggregate the monthly indicator into per-quarter buckets ----
+  ind_v <- as.numeric(indicator_ts)
+  ind_tsp <- stats::tsp(indicator_ts)
+  start_y <- floor(ind_tsp[1] + 1e-9)
+  start_m <- round((ind_tsp[1] - start_y) * 12 + 1)
+  # Build (year, quarter) labels for each monthly observation.
+  n_ind <- length(ind_v)
+  ind_year <- start_y + (seq_len(n_ind) - 1L + (start_m - 1L)) %/% 12L
+  ind_month <- ((start_m - 1L + seq_len(n_ind) - 1L) %% 12L) + 1L
+  ind_quarter <- (ind_month - 1L) %/% 3L + 1L
+  ind_key <- ind_year * 10L + ind_quarter   # e.g. 20211 = 2021Q1
+
+  # Mean per (year, quarter), tracking the number of months observed so
+  # we can mark partial quarters distinctly from full ones.
+  ind_buckets <- vapply(unique(ind_key), function(k) {
+    sel <- ind_key == k & !is.na(ind_v)
+    if (!any(sel)) return(c(NA_real_, 0))
+    c(mean(ind_v[sel]), sum(sel))
+  }, numeric(2))
+  ind_means  <- ind_buckets[1, ]
+  ind_nmonth <- ind_buckets[2, ]
+  ind_q_keys <- unique(ind_key)
+
+  # ---- Pair with the target's quarterly history ----
+  tgt_v <- as.numeric(target_ts)
+  tgt_tsp <- stats::tsp(target_ts)
+  tgt_start_y <- floor(tgt_tsp[1] + 1e-9)
+  tgt_start_q <- round((tgt_tsp[1] - tgt_start_y) * 4 + 1)
+  n_tgt <- length(tgt_v)
+  tgt_year <- tgt_start_y +
+              (seq_len(n_tgt) - 1L + (tgt_start_q - 1L)) %/% 4L
+  tgt_q <- ((tgt_start_q - 1L + seq_len(n_tgt) - 1L) %% 4L) + 1L
+  tgt_key <- tgt_year * 10L + tgt_q
+
+  # OLS sample: full-month quarters (3 obs) AND both target + indicator
+  # non-NA.
+  match_pos <- match(tgt_key, ind_q_keys)
+  has_ind   <- !is.na(match_pos)
+  ind_aligned <- rep(NA_real_, n_tgt)
+  ind_nmonth_aligned <- rep(0L, n_tgt)
+  ind_aligned[has_ind]        <- ind_means[match_pos[has_ind]]
+  ind_nmonth_aligned[has_ind] <- as.integer(ind_nmonth[match_pos[has_ind]])
+
+  full_sample <- !is.na(tgt_v) & !is.na(ind_aligned) & ind_nmonth_aligned == 3L
+  if (sum(full_sample) < 8L) {
+    # Not enough overlap to fit a bridge regression — degrade gracefully.
+    return(forecast_one(target_ts, variable, h, "arima", level))
+  }
+
+  df_fit <- data.frame(
+    y = tgt_v[full_sample],
+    x = ind_aligned[full_sample]
+  )
+  fit <- tryCatch(stats::lm(y ~ x, data = df_fit),
+                  error = function(e) NULL)
+  if (is.null(fit)) {
+    return(forecast_one(target_ts, variable, h, "arima", level))
+  }
+  sigma <- summary(fit)$sigma
+  z_crit <- stats::qnorm(0.5 + level / 200)  # two-sided level%
+
+  # ---- Forecast the next `h` quarters using indicator's recent months
+  last_tgt_key <- max(tgt_key[!is.na(tgt_v)])
+  fc_keys <- last_tgt_key + cumsum(rep(c(1L, 7L), length.out = h)) -
+             rep(c(0L, 6L), length.out = h)
+  # simpler: build by hand
+  fc_keys <- integer(h)
+  ly <- last_tgt_key %/% 10L
+  lq <- last_tgt_key %% 10L
+  for (i in seq_len(h)) {
+    lq <- lq + 1L
+    if (lq > 4L) { lq <- 1L; ly <- ly + 1L }
+    fc_keys[i] <- ly * 10L + lq
+  }
+
+  rows <- vector("list", h)
+  for (i in seq_len(h)) {
+    k <- fc_keys[i]
+    pos <- match(k, ind_q_keys)
+    if (is.na(pos)) {
+      # No indicator coverage for this quarter — use last available
+      # indicator-quarter value (carry-forward).
+      pos <- length(ind_q_keys)
+    }
+    x_val <- ind_means[pos]
+    central <- stats::predict(fit, newdata = data.frame(x = x_val))
+    se <- sigma  # rough constant interval; ignores OLS leverage
+    yr <- k %/% 10L; qn <- k %% 10L
+    # Match forecast_one()'s `quarter` column type — tsibble yearquarter.
+    rows[[i]] <- tibble::tibble(
+      variable = variable,
+      quarter  = tsibble::yearquarter(sprintf("%d Q%d", yr, qn)),
+      central  = unname(central),
+      lower    = unname(central - z_crit * se),
+      upper    = unname(central + z_crit * se),
+      method   = sprintf("bridge_monthly[%s]", indicator_name)
+    )
+  }
+  dplyr::bind_rows(rows)
 }
 
 #' Splice nowcast forecasts back into a MARTIN-shape database

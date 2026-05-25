@@ -181,3 +181,66 @@ test_that("bridge method returns the canonical shape for several variables", {
   expect_true(all(is.finite(out$central)))
   expect_true(all(out$method == "bridge"))
 })
+
+# --- bridge_monthly tests --------------------------------------------------
+
+# Build a synthetic monthly indicator and a quarterly target with a known
+# linear relationship: target = 2 * indicator_quarterly + noise.
+make_synthetic_bridge <- function() {
+  n_months <- 120L
+  set.seed(42)
+  ind_m <- 50 + cumsum(stats::rnorm(n_months, mean = 0.1, sd = 0.5))
+  ind_ts <- bimets::TIMESERIES(ind_m, START = c(2010, 1), FREQ = 12)
+  # Quarterly aggregation: mean of 3 monthly values
+  ind_q <- sapply(seq.int(1L, n_months, by = 3L),
+                  function(i) mean(ind_m[i:(i + 2)]))
+  tgt_q <- 2 * ind_q + stats::rnorm(length(ind_q), 0, 0.3)
+  tgt_ts <- bimets::TIMESERIES(tgt_q, START = c(2010, 1), FREQ = 4)
+  list(target = tgt_ts, indicator = ind_ts)
+}
+
+test_that("bridge_monthly recovers a known linear relationship", {
+  s <- make_synthetic_bridge()
+  out <- nowcast_handover(
+    database  = list(Y = s$target),
+    h         = 2,
+    method    = "bridge_monthly",
+    variables = "Y",
+    bridge_indicators  = list(Y = "HOURS"),
+    monthly_indicators = list(HOURS = s$indicator)
+  )
+  expect_setequal(names(out),
+                  c("variable", "quarter", "central", "lower", "upper",
+                    "method"))
+  expect_equal(nrow(out), 2L)
+  # Predictions should be ~ 2 * (recent indicator mean)
+  ind_recent <- mean(tail(as.numeric(s$indicator), 6))
+  expect_lt(abs(out$central[1] - 2 * ind_recent), 1.0,
+            label = "bridge_monthly prediction within 1.0 of 2*indicator")
+  expect_true(all(out$method == "bridge_monthly[HOURS]"))
+})
+
+test_that("bridge_monthly falls back to ARIMA when indicator missing", {
+  s <- make_synthetic_bridge()
+  out <- nowcast_handover(
+    database  = list(Y = s$target),
+    h         = 2,
+    method    = "bridge_monthly",
+    variables = "Y",
+    bridge_indicators  = list(Y = "NONEXISTENT"),
+    monthly_indicators = list(HOURS = s$indicator)  # no NONEXISTENT key
+  )
+  expect_equal(nrow(out), 2L)
+  expect_true(all(out$method == "arima"))
+})
+
+test_that("bridge_monthly errors when bridge_indicators or monthly_indicators missing", {
+  s <- make_synthetic_bridge()
+  expect_error(
+    nowcast_handover(
+      database = list(Y = s$target), h = 2,
+      method = "bridge_monthly", variables = "Y"
+    ),
+    "bridge_indicators"
+  )
+})

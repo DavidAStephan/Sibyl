@@ -32,6 +32,15 @@ test_that("source_id is populated for non-derived rows and NA for derived", {
   expect_true(all(is.na(cat$source_id[cat$source == "derived"])))
 })
 
+test_that("monthly catalogue rows have aggregation rules", {
+  cat <- series_catalogue()
+  monthly <- cat[cat$source_frequency == "M", , drop = FALSE]
+  expect_true(all(!is.na(monthly$aggregation)),
+              info = paste("missing aggregation for monthly rows:",
+                           paste(monthly$martin_var[is.na(monthly$aggregation)],
+                                 collapse = ", ")))
+})
+
 test_that("aggregation rule is present for sub-quarterly sources", {
   cat <- series_catalogue()
   sub_q <- cat[cat$source_frequency %in% c("M", "D") &
