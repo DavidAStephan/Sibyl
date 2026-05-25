@@ -159,24 +159,48 @@ list(
   ),
 
   # ---------------------------------------------------------------------------
-  # 5. Judgement — narrative -> add-factor proposals
-  # ANTHROPIC_API_KEY absent => empty adjustment list (degraded but
-  # complete pipeline run).
+  # 5. Judgement — narrative -> add-factor proposals, with iterative
+  #    refinement against the round-trip audit. The orchestrator
+  #    `propose_with_refinement()` runs:
+  #      propose -> solve -> describe -> audit
+  #      -> if audit disagrees, refine (re-prompt LLM with audit feedback)
+  #      -> repeat up to max_iters times.
+  #    ANTHROPIC_API_KEY absent => empty adjustment list (degraded but
+  #    complete pipeline run).
   # ---------------------------------------------------------------------------
-  tar_target(proposed_adjustments,
+  tar_target(refined_round,
     if (nzchar(Sys.getenv("ANTHROPIC_API_KEY"))) {
-      judgement::propose_adjustments(
+      solve_fn <- function(adj) {
+        martin::solve_martin(
+          database       = database_with_handover,
+          adjustments    = adj,
+          horizon        = horizon,
+          coefficients   = if (is.null(estimation_end)) "frozen"
+                           else "reestimated",
+          estimation_end = estimation_end,
+          scenario       = "refinement-iter"
+        )
+      }
+      judgement::propose_with_refinement(
         narrative = narrative,
         baseline  = baseline,
+        solve_fn  = solve_fn,
+        max_iters = 3L,
         round_id  = round_id,
         model     = "claude-haiku-4-5"
       )
     } else {
       message("[targets] ANTHROPIC_API_KEY not set; ",
-              "proposing empty adjustment list.")
-      judgement::adjustment_list()
+              "skipping LLM refinement loop.")
+      list(adjustments = judgement::adjustment_list(),
+           projection = NULL, description = NULL,
+           audit = NULL, history = list())
     }
   ),
+
+  tar_target(proposed_adjustments, refined_round$adjustments),
+
+  tar_target(refinement_history, refined_round$history),
 
   # ---------------------------------------------------------------------------
   # 6. Human-in-the-loop approval. Non-interactive by default for

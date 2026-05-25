@@ -54,7 +54,7 @@ adjustment <- function(equation,
                        tail           = c("decay_50", "carry", "zero"),
                        owner          = NA_character_,
                        round_id       = NA_character_,
-                       source         = c("human", "llm")) {
+                       source         = c("human", "llm", "llm-refined")) {
   confidence <- match.arg(confidence)
   tail       <- match.arg(tail)
   source     <- match.arg(source)
@@ -139,8 +139,8 @@ validate_adjustment <- function(x) {
   if (!x$tail %in% c("decay_50", "carry", "zero")) {
     stop("`tail` must be one of decay_50, carry, zero.", call. = FALSE)
   }
-  if (!x$source %in% c("human", "llm")) {
-    stop("`source` must be one of human, llm.", call. = FALSE)
+  if (!x$source %in% c("human", "llm", "llm-refined")) {
+    stop("`source` must be one of human, llm, llm-refined.", call. = FALSE)
   }
 
   # Cross-check against the catalogue if available. Soft check: if martin
