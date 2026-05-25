@@ -24,7 +24,7 @@ Status as of the last commit:
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
 | Round report | renders to `reports/round.html` |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 15/15 targets succeed; latest sticky-services run produces sensible magnitudes (PTM +1.3% by 2025Q4, round-trip `overall_match = "agree"`) — ~16s total wall clock |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 15/15 targets succeed; LUR-narrative round now hits magnitude target (-1.6pp realised vs -1.5pp narrative) and the round-trip audit surfaces real narrative-vs-model gaps (Taylor Rule + Phillips curve responses). ~20s total wall clock with Haiku across all three LLM steps |
 
 The 15 skips are all intentional — live-API tests that require keys
 (FRED_API_KEY, ANTHROPIC_API_KEY) that aren't required for CI.
@@ -166,36 +166,40 @@ The run also surfaced two judgement-package bugs:
   a percent), which the describer misread as pp. Now emits "pp" for
   rate variables explicitly.
 
-### 3. Magnitude calibration loop (~½–1 session)
+### 3. Magnitude calibration via few-shot examples — DONE (option b)
 
-The LUR run surfaced the next-tier problem: even a competent LLM
-won't get AF magnitudes right on the first try, because it can't
-reason about MARTIN's internal damping (e.g. Okun error-correction
-speed, decay-tail compounding). The round-trip auditor catches the
-gap but doesn't close it.
+Implemented option (b) — three worked examples in
+`system_prompt_propose` (PTM sticky inflation, TLUR structural shift
+showing the 5x undershoot, LUR direct cyclical) plus a "critical
+heuristic" block teaching that trend AFs pass through to cyclical
+variables at only ~25–40% of their level shift. Re-running the LUR
+narrative:
 
-Three increasingly-ambitious options:
+- Before few-shot: LLM picked TLUR @ -0.075 → realised LUR -0.29pp
+  (5x undershoot vs narrative's -1.5pp target).
+- After few-shot: LLM picks LUR direct @ -0.19 over 8 quarters →
+  realised LUR -1.60pp by 2025Q4 (hits target within 0.1pp).
 
-**a) Calibration loop (cheap).** Wire a feedback step: after the
-audit returns `disagree` on a magnitude claim, re-prompt the
-proposer with `the_solve_says_X, narrative_says_Y, please revise`.
-Cap at 2-3 iterations. Cost: 2-3× the propose tokens per round.
+Also added a variable glossary to `projection_diff_text` because the
+describer was hallucinating variable meanings — it called NCR "nominal
+cost of revenue" when NCR is the nominal cash rate. The glossary fixes
+that; the describer now correctly identifies NCR, P, PTM, etc.
 
-**b) Few-shot scale examples (cheaper).** Embed 2-3 worked examples
-in `system_prompt_propose`, drawn from
-`scripts/lur_gap_walkthrough.R` and the recent PTM round, showing
-the realised projection effect of specific values. The LLM should
-infer the propagation from concrete examples better than from text
-descriptions of channels.
+End-state: round-trip on the LUR narrative is now genuinely strict.
+Agrees that LUR target was hit, but disagrees that "no change to
+cash-rate path" / "no change to inflation" — because in MARTIN you
+cannot lower LUR by 1.5pp without the Taylor Rule and Phillips curve
+responding. The system surfacing genuine narrative-vs-model gaps.
 
-**c) Sensitivity-matrix appendix (more work).** For each adjustable
-equation, pre-solve a unit-shock and store the resulting
-deviations on the key aggregates. Feed this matrix to the LLM as a
-"if you adjust X by 1 unit, expect Y to move by Z" lookup. Closes
-the calibration gap directly but needs ~95 pre-solves + a delivery
-format. Big-payoff but expensive to build.
-
-(b) is the obvious first try. (a) is the obvious second.
+**Follow-ups if you want more polish here:**
+- Option (a) — calibration loop — would close the audit's flagged
+  gaps automatically by re-prompting with the realised numbers and
+  asking for revised proposals. Cheap to add: ~½ session.
+- Option (c) — sensitivity matrix — would let the LLM reason about
+  multi-equation interactions ahead of time (so it could pre-suppose
+  the Taylor-Rule response and add an NCR AF if the narrative wants
+  to suppress it). Big payoff but needs ~95 pre-solves + delivery
+  format design. ~1 session.
 
 ### 4. RSTAR full-port accuracy improvement (~½–1 session)
 
@@ -582,6 +586,20 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Few-shot examples + variable glossary close the LLM calibration
+  gap** — three worked examples in `system_prompt_propose` (PTM sticky
+  inflation, TLUR with documented 5x undershoot, LUR direct cyclical)
+  plus a "trend → cyclical pass-through is 25-40%" heuristic teach the
+  LLM to scale AFs correctly. LUR-narrative round now hits the
+  magnitude target: LLM picks LUR @ -0.19 (was TLUR @ -0.075),
+  realised LUR ends 2025Q4 at -1.6pp vs the narrative's -1.5pp target.
+  A variable glossary in `projection_diff_text` stops the describer
+  from hallucinating variable meanings ("NCR" was being called
+  "nominal cost of revenue" — actually the nominal cash rate). The
+  audit now correctly flags the narrative's internal inconsistency
+  (you can't lower LUR by 1.5pp without the Taylor Rule and Phillips
+  curve responding) — `overall_match = "disagree"`. System working as
+  designed.
 - **Blind describer + clearer diff units + LUR-narrative test** —
   running a labour-market narrative ("LUR ~1.5pp below baseline by
   2025Q4 due to structural shifts") surfaced two design bugs: (1)
