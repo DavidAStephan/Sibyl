@@ -502,6 +502,19 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **LUR-gap walkthrough** — adds
+  `scripts/lur_gap_walkthrough.R` demonstrating that a single
+  add-factor on the LUR behavioural equation closes the post-COVID
+  labour-market gap that re-estimation alone can't fix: baseline LUR
+  5.57% at 2025Q4 → adjusted 4.11% (target ~4.0%), pre-2020
+  unchanged, macroeconomic response internally consistent (NCR
+  tightens via Taylor Rule, modest inflationary push, slightly
+  weaker Y/RC). En-route finding: AF on LE alone doesn't move LUR
+  because LF rises in lockstep via the LF = LE / (1 - LUR/100)
+  identity; the residual lives in LUR's own behavioural, not in
+  LE/LF. Concrete demonstration that the LLM judgement layer's
+  whole-point — translating narratives into targeted residual
+  adjustments that close structural gaps — actually delivers.
 - **MARTIN re-estimation through 2025Q2** — `load_martin()` and
   `solve_martin()` gain an `estimation_end` parameter that rewrites
   every `TSRANGE` line in the model text to a user-specified end
