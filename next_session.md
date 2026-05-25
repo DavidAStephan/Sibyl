@@ -137,32 +137,67 @@ re-run produced a clean round:
 
 The end-to-end LLM round now works as designed.
 
-### 2. Stress-test the round-trip with a LUR-focused narrative (~¼ session)
+### 2. Stress-test the round-trip with a LUR-focused narrative — DONE
 
-The PTM/sticky-inflation narrative was a soft test — small magnitudes,
-straightforward channel. The more interesting case is the labour-market
-gap that re-estimation alone can't fix. Re-purpose the narrative from
-`scripts/lur_gap_walkthrough.R`:
+Ran the labour-market narrative ("employment stronger than the model
+predicts, LUR ~1.5pp below baseline by 2025Q4"). Findings:
 
-> "Employment growth has been persistently stronger than the model
-> predicts since the post-COVID reopening. We expect this to persist
-> through 2025Q4, lowering LUR by roughly 1.5pp by year-end."
+- **Equation choice was *better* than expected.** The LLM picked
+  TLUR (the structural NAIRU / trend unemployment) rather than LUR
+  cyclical or LE. The narrative explicitly cites structural causes
+  (long-COVID, immigration composition, care-economy growth), and a
+  TLUR shift is the right MARTIN representation for that — actual
+  LUR pulls toward TLUR via the error-correction term in the LUR
+  behavioural. Sidesteps the LF-identity gotcha entirely.
+- **Magnitude was qualitatively right, quantitatively ~5x too small.**
+  Proposed -0.075pp/quarter on TLUR for 12 quarters with `carry`,
+  expected -1.5pp on LUR by 2025Q4. Got -0.29pp. The LUR equation's
+  Okun-error-correction speed is slow (LUR_DUM=0.025 in the LHS),
+  so only ~30% of the TLUR shift passes through to LUR within the
+  12-quarter window. The LLM doesn't have a feel for this damping.
+- **Audit caught it.** Round-trip flagged claim 3 (-1.5pp on LUR) as
+  `disagree`; `overall_match = "partial"`. The design working.
 
-Replace `_targets.R`'s narrative, invalidate the LLM targets, re-run.
-**Pass criteria:**
-- LLM adjusts the LUR equation (not LE — see the walkthrough's
-  en-route finding that the LF identity cancels LE-only AFs).
-- Value in the range **-0.10 to -0.05** per quarter (LUR is
-  `units=percent`, so value is in pp directly; -0.08 × ~20 quarters
-  closes the 1.5pp gap with decay).
-- Horizon roughly 2020Q1–2024Q4 or 2022Q1–2025Q2.
-- Round-trip auditor: `overall_match = "agree"`.
+The run also surfaced two judgement-package bugs:
+- `describe_projection` was fed the narrative *and* told to "mirror
+  the framing," making round-trip trivially self-satisfied. Now the
+  describer is blind to the narrative by design.
+- `projection_diff_text` emitted "(-5.2%)" for LUR (percent change of
+  a percent), which the describer misread as pp. Now emits "pp" for
+  rate variables explicitly.
 
-If the LLM picks LE instead, that's a *systematic* gotcha worth
-addressing in the catalogue or prompt — the equation_catalogue's
-`channel` text should make the LF-identity issue legible.
+### 3. Magnitude calibration loop (~½–1 session)
 
-### 3. RSTAR full-port accuracy improvement (~½–1 session)
+The LUR run surfaced the next-tier problem: even a competent LLM
+won't get AF magnitudes right on the first try, because it can't
+reason about MARTIN's internal damping (e.g. Okun error-correction
+speed, decay-tail compounding). The round-trip auditor catches the
+gap but doesn't close it.
+
+Three increasingly-ambitious options:
+
+**a) Calibration loop (cheap).** Wire a feedback step: after the
+audit returns `disagree` on a magnitude claim, re-prompt the
+proposer with `the_solve_says_X, narrative_says_Y, please revise`.
+Cap at 2-3 iterations. Cost: 2-3× the propose tokens per round.
+
+**b) Few-shot scale examples (cheaper).** Embed 2-3 worked examples
+in `system_prompt_propose`, drawn from
+`scripts/lur_gap_walkthrough.R` and the recent PTM round, showing
+the realised projection effect of specific values. The LLM should
+infer the propagation from concrete examples better than from text
+descriptions of channels.
+
+**c) Sensitivity-matrix appendix (more work).** For each adjustable
+equation, pre-solve a unit-shock and store the resulting
+deviations on the key aggregates. Feed this matrix to the LLM as a
+"if you adjust X by 1 unit, expect Y to move by Z" lookup. Closes
+the calibration gap directly but needs ~95 pre-solves + a delivery
+format. Big-payoff but expensive to build.
+
+(b) is the obvious first try. (a) is the obvious second.
+
+### 4. RSTAR full-port accuracy improvement (~½–1 session)
 
 `fit_rstar_kfas_full` is now **stable** on live data (fixed-prior
 structural params via `RSTAR_FULL_PARAMS` produce live values in the
@@ -187,7 +222,7 @@ Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
 auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
 expose.
 
-### 4. PI_E / TLUR fidelity restoration — DONE
+### 5. PI_E / TLUR fidelity restoration — DONE
 
 Both v0 ports now have the dropped structure restored:
 
@@ -201,7 +236,7 @@ Both v0 ports now have the dropped structure restored:
   omega_{1..2} (lagged ULC AR). All pre-OLS-estimated; pre-subtracted
   before KFAS sees the modified observations.
 
-### 5. Nowcast bridge equations — DONE
+### 6. Nowcast bridge equations — DONE
 
 True monthly-indicator bridge equations now ship via
 `nowcast::nowcast_handover(method = "bridge_monthly", ...)`.
@@ -238,7 +273,7 @@ Follow-up ideas (none required for v0):
   bridge_monthly when monthly data is fresher than quarterly
 - AR(1) error term on the bridge regression for better intervals
 
-### 6. Faithful state-space accuracy (~1 session)
+### 7. Faithful state-space accuracy (~1 session)
 
 The faithful PI_E and TLUR ports trade a few correlation points
 against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
@@ -547,6 +582,19 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Blind describer + clearer diff units + LUR-narrative test** —
+  running a labour-market narrative ("LUR ~1.5pp below baseline by
+  2025Q4 due to structural shifts") surfaced two design bugs: (1)
+  `describe_projection` was fed the narrative and told to "mirror the
+  framing," making the round-trip audit trivially self-satisfied;
+  (2) `projection_diff_text` emitted "-5.2%" for LUR (percent change
+  of a percent), which the describer misread as pp. Fixed both. The
+  audit now does its job — the LLM picked TLUR (correctly! a
+  sophisticated trend-NAIRU shift) at -0.075pp/quarter, but the
+  Okun-EC speed only passed -0.29pp through to actual LUR (vs the
+  narrative's -1.5pp target). Round-trip flagged the magnitude
+  undershoot. The describer is now blind by design; the next-tier
+  problem is magnitude-calibration (item 3 above).
 - **Fix stale narrative date + validate scale-aware prompt** —
   the narrative in `_targets.R` said "through 2018Q3" but the
   projection horizon is 2010Q1–2025Q4, which (combined with the LLM's
