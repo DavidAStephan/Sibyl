@@ -24,7 +24,7 @@ Status as of the last commit:
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
 | Round report | renders to `reports/round.html` |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 15/15 targets succeed; round-trip auditor flagged a real translation failure on the most recent run (PTM scale, see item 1) |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 15/15 targets succeed; latest sticky-services run produces sensible magnitudes (PTM +1.3% by 2025Q4, round-trip `overall_match = "agree"`) — ~16s total wall clock |
 
 The 15 skips are all intentional — live-API tests that require keys
 (FRED_API_KEY, ANTHROPIC_API_KEY) that aren't required for CI.
@@ -118,59 +118,51 @@ if Quarto isn't on PATH.
 Ranked by leverage. Each item is independent — pick whichever you
 have appetite for.
 
-### 1. Validate the scale-aware system prompt (~½ session, ~$5 in Opus tokens)
+### 1. Validate the scale-aware system prompt — DONE
 
-The end-to-end LLM round has now been run for real (live Anthropic API,
-sticky-services narrative). All four pipeline steps fired, but the
-output revealed a calibration failure that has since been addressed in
-the prompt only — *not* yet validated on a fresh run:
+The first live LLM round (sticky-services narrative) miscalibrated
+PTM at value=0.1 per quarter, compounding prices +358%. The round-trip
+auditor flagged it (`overall_match = "disagree"`). After (a) the
+scale-guidance prompt block in `system_prompt_propose` and (b) fixing
+the narrative's stale "through 2018Q3" date to "through 2025Q2", the
+re-run produced a clean round:
 
-**What the LLM did:** proposed 7 adjustments on PTM at value=0.1 per
-quarter over 2023Q1–2024Q3, `decay_50`. PTM's LHS is `TSDELTALOG(PTM)`,
-so 0.1 means +10pp/quarter to the price inflation rate. Over the
-horizon this compounded the price level **+358%** above baseline,
-crushed consumption to **−51%**, and pushed unemployment **+8.08pp**
-above baseline.
+- 6 PTM adjustments at value=**0.001** (= +0.1pp on the quarterly rate)
+- placed 2024Q1–2025Q2 (matches the narrative window)
+- price level ends 2025Q4 at +1.3% above baseline
+- NCR rises ~1pp via Taylor Rule (endogenous response, not an LLM proposal)
+- real Y / RC / GNE all -0.5 to -0.6% (textbook output cost of higher prices)
+- LUR essentially unchanged
+- Round-trip auditor: `overall_match = "agree"`, all 4 claims agree
 
-**What caught it:** `compare_narrative_to_description` returned
-`overall_match = "disagree"`, flagging that the narrative's "+0.1pp
-trimmed-mean inflation" doesn't match a projection where prices triple.
-This is the round-trip guard working exactly as DESIGN.md describes —
-narrative → adjustments → solve → description → audit, with the audit
-catching translation failures before a human is misled.
+The end-to-end LLM round now works as designed.
 
-**The prompt fix that hasn't been exercised yet** is in
-[packages/judgement/R/llm_helpers.R:120-135](packages/judgement/R/llm_helpers.R#L120-L135):
-explicit residual-unit guidance teaching the LLM that on `units=log_diff`
-equations, value 0.001 is +0.1pp on the quarterly rate, and that values
-> 0.01/quarter need a crisis-level narrative. Also adds length-counting
-guidance ("2025Q4 to 2027Q4 is 9 quarters") after a prior run miscounted.
+### 2. Stress-test the round-trip with a LUR-focused narrative (~¼ session)
 
-**Concrete next step:**
-1. `targets::tar_invalidate(any_of(c("proposed_adjustments",
-   "approved_adjustments", "projection", "projection_description",
-   "round_trip_check", "round_report")))` to force re-propose.
-2. `tar_make()` — this will hit Anthropic again (~8 min Opus call for
-   propose + ~5s Haiku for describe + audit).
-3. Inspect `targets::tar_read(proposed_adjustments)` — pass if PTM
-   values are in the **0.0005 – 0.002** range and quarter count matches
-   what the narrative implies. Fail if value > 0.01 or quarter count
-   off by more than ±1.
-4. If still miscalibrated: add a 1–2 example block to the prompt
-   (few-shot, e.g. the LUR-gap-walkthrough adjustment). The prompt
-   currently has no concrete value examples — the LLM is inferring
-   scale purely from text descriptions.
-5. Once the prompt produces a reasonable round, also fix the stale
-   narrative in `_targets.R`: it mentions "through 2018Q3" but the
-   projection horizon is 2026–2030. That's almost certainly *why* the
-   LLM placed adjustments in 2023Q1–2024Q3 (it tried to match the
-   narrative's date even though we're in 2026).
+The PTM/sticky-inflation narrative was a soft test — small magnitudes,
+straightforward channel. The more interesting case is the labour-market
+gap that re-estimation alone can't fix. Re-purpose the narrative from
+`scripts/lur_gap_walkthrough.R`:
 
-Stretch: parametrise the propose-step model in `_targets.R`. Opus is
-overkill for translation — Sonnet 4.6 should be enough and runs in
-~1/4 the time at ~1/5 the cost. Keep Haiku for describe + audit.
+> "Employment growth has been persistently stronger than the model
+> predicts since the post-COVID reopening. We expect this to persist
+> through 2025Q4, lowering LUR by roughly 1.5pp by year-end."
 
-### 2. RSTAR full-port accuracy improvement (~½–1 session)
+Replace `_targets.R`'s narrative, invalidate the LLM targets, re-run.
+**Pass criteria:**
+- LLM adjusts the LUR equation (not LE — see the walkthrough's
+  en-route finding that the LF identity cancels LE-only AFs).
+- Value in the range **-0.10 to -0.05** per quarter (LUR is
+  `units=percent`, so value is in pp directly; -0.08 × ~20 quarters
+  closes the 1.5pp gap with decay).
+- Horizon roughly 2020Q1–2024Q4 or 2022Q1–2025Q2.
+- Round-trip auditor: `overall_match = "agree"`.
+
+If the LLM picks LE instead, that's a *systematic* gotcha worth
+addressing in the catalogue or prompt — the equation_catalogue's
+`channel` text should make the LF-identity issue legible.
+
+### 3. RSTAR full-port accuracy improvement (~½–1 session)
 
 `fit_rstar_kfas_full` is now **stable** on live data (fixed-prior
 structural params via `RSTAR_FULL_PARAMS` produce live values in the
@@ -195,7 +187,7 @@ Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
 auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
 expose.
 
-### 3. PI_E / TLUR fidelity restoration — DONE
+### 4. PI_E / TLUR fidelity restoration — DONE
 
 Both v0 ports now have the dropped structure restored:
 
@@ -209,7 +201,7 @@ Both v0 ports now have the dropped structure restored:
   omega_{1..2} (lagged ULC AR). All pre-OLS-estimated; pre-subtracted
   before KFAS sees the modified observations.
 
-### 4. Nowcast bridge equations — DONE
+### 5. Nowcast bridge equations — DONE
 
 True monthly-indicator bridge equations now ship via
 `nowcast::nowcast_handover(method = "bridge_monthly", ...)`.
@@ -246,7 +238,7 @@ Follow-up ideas (none required for v0):
   bridge_monthly when monthly data is fresher than quarterly
 - AR(1) error term on the bridge regression for better intervals
 
-### 5. Faithful state-space accuracy (~1 session)
+### 6. Faithful state-space accuracy (~1 session)
 
 The faithful PI_E and TLUR ports trade a few correlation points
 against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
@@ -555,6 +547,17 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Fix stale narrative date + validate scale-aware prompt** —
+  the narrative in `_targets.R` said "through 2018Q3" but the
+  projection horizon is 2010Q1–2025Q4, which (combined with the LLM's
+  pre-fix calibration issue) caused PTM adjustments to be placed in
+  the wrong window with the wrong magnitude on the first live run.
+  Updating the narrative to "through 2025Q2" + the scale-aware prompt
+  produces a textbook round: 6 PTM AFs at value=0.001 (=+0.1pp/quarter)
+  over 2024Q1–2025Q2, price level ends 2025Q4 at +1.3% above baseline,
+  Y / RC / GNE all -0.5 to -0.6%, NCR +1pp via Taylor Rule (endogenous,
+  not LLM-proposed), LUR essentially unchanged. Round-trip auditor:
+  `overall_match = "agree"`, all 4 narrative claims agreed.
 - **judgement: ellmer shape + factor handling + scale guidance** —
   three fixes surfaced by running the end-to-end LLM round for real.
   `propose_adjustments` and `compare_narrative_to_description` now
