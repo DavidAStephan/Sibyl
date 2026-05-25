@@ -78,7 +78,7 @@ REWI,rba,F15_FREREWI,F15,Q,NA,direct,Real export-weighted index,Index,NA
 NBC,rba,D02_DLCACBS,D02,M,mean,direct,Business credit (seasonally adjusted),AUD billions,NA
 NTC,rba,D02_DLCACS,D02,M,mean,direct,Total credit (seasonally adjusted),AUD billions,NA
 PTM,rba,G01_GCPIOCPMTMQP,G01,Q,NA,level_from_pct,Trimmed mean inflation (quarterly percent; cumulated to level series),Percent,NA
-PEX,rba,G01_GCPIXVIQP,G01,Q,NA,direct,CPI excluding volatile items (quarterly percent),Percent,NA
+PEX,rba,G01_GCPIXVIQP,G01,Q,NA,level_from_pct,CPI excluding volatile items (cumulated from quarterly percent to level; base PEXL[1982Q1]=100),Index,NA
 PI_E_BOND,rba,G03_GBONYLD,G03,Q,NA,direct,Break-even 10-year inflation rate from bond yields,Percent,NA
 P,rba,G01_GCPIEITCQP,G01,Q,NA,level_from_pct,Headline CPI excluding interest charges and GST (quarterly percent),Percent,NA
 WPAG,worldbank,iAGRICULTURE,CMO,M,mean,direct,World Bank agricultural commodity price index (monthly historical xlsx),Index 2010=100,NA
@@ -235,3 +235,4 @@ IAD_W_I,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for private in
 IAD_W_X,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for exports,Ratio,NA
 NBR,rba,F05_FILRLBWAV,F05,M,mean,direct,Business borrowing rate (historical RBA F05 weighted-average; deprecated 2019Q3 but spans 1978-2019),Percent per annum,NA
 RT,abs,A3348585R,8501.0,M,mean,direct,Retail trade turnover (total industries; seasonally adjusted); leading monthly indicator for quarterly consumption,AUD millions,NA
+NHFA_TREND,derived,NA,NA,Q,NA,dummy,"Range dummy: 1 from 2003Q3-2007Q2 (financial-asset-trend period; used in NHFA behavioural)",0/1,NA

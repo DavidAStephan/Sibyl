@@ -84,25 +84,38 @@ list(
     )
   ),
 
-  # Demo horizon — historical so the v0 solve_martin handles it cleanly.
-  # When future-horizon support lands (DESIGN.md item 7) this becomes the
-  # actual forecast window.
-  tar_target(horizon, c("2010Q1", "2018Q3")),
+  # Solve horizon. Extended to cover the latest National Accounts
+  # release (2025Q4) now that the merge correctly coalesces live data
+  # past the fixture's 2019Q3 cutoff. MARTIN's behavioural-equation
+  # estimation samples still end 2019Q3 (frozen-coefficient design),
+  # but the solve itself produces in-sample backcasts through the
+  # available data and projects forward from there. Future-horizon
+  # support (DESIGN.md item 7) is needed to extend past the data end.
+  tar_target(horizon, c("2010Q1", "2025Q4")),
 
   # ---------------------------------------------------------------------------
   # 2. Data — sibyldata (or fixture in v0)
   # ---------------------------------------------------------------------------
   tar_target(raw_database,
-    if (data_source == "fixture") {
-      martin::read_fixture()
-    } else {
-      # Pull every implemented source. Transient failures (e.g. ABS
-      # download glitches) emit warnings via update_data()'s
-      # tolerate_failures path; the merge step below backfills any
-      # series that didn't materialise from live data.
-      panel <- sibyldata::update_data(sources = "all")
-      live  <- sibyldata::to_martin_database(panel)
-      sibyldata::merge_with_fallback(live, martin::read_fixture())
+    {
+      base_db <- if (data_source == "fixture") {
+        martin::read_fixture()
+      } else {
+        # Pull every implemented source. Transient failures (e.g. ABS
+        # download glitches) emit warnings via update_data()'s
+        # tolerate_failures path; the merge step below backfills any
+        # series that didn't materialise from live data.
+        panel <- sibyldata::update_data(sources = "all")
+        live  <- sibyldata::to_martin_database(panel)
+        sibyldata::merge_with_fallback(live, martin::read_fixture())
+      }
+      # Extend exogenous variables to the solve horizon end. Required
+      # because some fixture-only series (RAIN, NHFA-style dummies)
+      # stop at the fixture's 2019Q3 end and need to be carried forward
+      # so SIMULATE has values across the full horizon. Carry-forward is
+      # safe for the cases this hits (dummies at 0, anchored constants);
+      # variables MARTIN solves endogenously aren't affected.
+      sibyldata::extend_exogenous(base_db, end_quarter = horizon[2])
     }
   ),
 

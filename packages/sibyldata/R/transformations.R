@@ -25,7 +25,10 @@
 # from the base quarter; we do the same.
 LEVEL_FROM_PCT_BASES <- list(
   PTM = list(base = 29.83452468, base_quarter = "1982Q1"),
-  P   = list(base = 100,         base_quarter = "1982Q1")
+  P   = list(base = 100,         base_quarter = "1982Q1"),
+  # PEX is cumulated from a 1982Q1 base of 100 in modify_data.prg:54-58
+  # (the PEXL series, which then replaces PEX via `rename pexl pex`).
+  PEX = list(base = 100,         base_quarter = "1982Q1")
 )
 
 #' Convert percent-change series to level series

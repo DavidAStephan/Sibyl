@@ -6,29 +6,39 @@
 
 #' Merge a primary MARTIN database with a fallback
 #'
-#' For each MARTIN variable, prefer `primary` when it **covers
-#' fallback's observed range** — meaning its first non-NA observation
-#' is at-or-before fallback's first non-NA, AND its last non-NA is
-#' at-or-after fallback's last non-NA. Otherwise fallback wins because
-#' MARTIN's behavioural equations need the full TSRANGE: if primary's
-#' coverage stops short of where MARTIN expects data (either historically
-#' or terminally), the estimation step blows up.
+#' For each MARTIN variable, splice `primary` into `fallback`
+#' quarter-by-quarter: take primary's value where primary has data,
+#' fall back to fallback's value where primary is NA, and union the
+#' time spans so the resulting series covers `min(primary_start,
+#' fallback_start)` to `max(primary_end, fallback_end)`.
 #'
-#' This handles two real cases we hit on Australian data:
-#' (1) live RBA series that start later than the fixture (e.g. N2R from
-#' 1995 vs MARTIN's 1993Q1 TSRANGE), and (2) live RBA series that the
-#' agency stopped updating before the fixture's end (e.g. D02 credit
-#' aggregates ending 2019Q2 vs fixture's 2019Q3).
+#' This handles three real cases on Australian data:
 #'
-#' Variables present only in `primary` are added; variables present only
-#' in `fallback` are kept.
+#'   (1) Live RBA series that start later than the fixture but extend
+#'       past it — e.g. LUR live 1978-2026Q1 vs fixture LUR 1959-2019Q3.
+#'       Older rule (primary wins only if it covers fallback's full
+#'       range) discarded the 6+ years of recent LUR data; coalesce
+#'       keeps fixture for 1959-1977 and live for 1978-2026Q1.
+#'   (2) Live series that the agency stopped updating before the
+#'       fixture's end — e.g. D02 credit ending 2019Q2 vs fixture's
+#'       2019Q3. Coalesce takes live through 2019Q2 and fixture's
+#'       2019Q3 value for the last quarter, then nothing past.
+#'   (3) Live series whose values just don't reach back as far as
+#'       MARTIN's behavioural-equation TSRANGEs need — coalesce fills
+#'       the historical gap from fixture so estimation works.
+#'
+#' For LEVEL series with vintage drift (e.g. PTM, GDP), the splice
+#' point can show a small step. This is bounded (typically <1-2 % of
+#' the level) and economically harmless; for ratio / rate series
+#' (LUR, NCR) the splice is seamless. Variables present only in
+#' `primary` are added; variables present only in `fallback` are kept.
 #'
 #' @param primary A named list of bimets TIMESERIES (typically a live
 #'   sibyldata-produced database).
 #' @param fallback A named list of bimets TIMESERIES (typically
 #'   `martin::read_fixture()`).
-#' @return A named list of bimets TIMESERIES covering the union, with
-#'   the coverage-based preference rule applied per variable.
+#' @return A named list of bimets TIMESERIES with the spliced union
+#'   per variable.
 #' @export
 merge_with_fallback <- function(primary, fallback) {
   out <- fallback
@@ -37,27 +47,48 @@ merge_with_fallback <- function(primary, fallback) {
       out[[v]] <- primary[[v]]
       next
     }
-    p_range <- nonna_range(primary[[v]])
-    f_range <- nonna_range(out[[v]])
-    if (any(is.na(p_range))) {
-      # Primary all-NA — keep fallback.
-      next
-    }
-    if (any(is.na(f_range))) {
-      # Fallback all-NA but primary has data — use primary.
-      out[[v]] <- primary[[v]]
-      next
-    }
-    if (p_range[1] <= f_range[1] && p_range[2] >= f_range[2]) {
-      out[[v]] <- primary[[v]]
-    }
-    # else keep fallback (primary doesn't cover full fallback range)
+    out[[v]] <- coalesce_ts(primary[[v]], out[[v]])
   }
   out
 }
 
+# Splice `primary` into `fallback`: union the time spans, use primary
+# where it has a non-NA value, fall back to fallback elsewhere. The
+# resulting bimets ts covers min(primary_start, fallback_start) to
+# max(primary_end, fallback_end).
+coalesce_ts <- function(primary, fallback) {
+  p_tsp <- stats::tsp(primary)
+  f_tsp <- stats::tsp(fallback)
+  start_dec <- min(p_tsp[1], f_tsp[1])
+  end_dec   <- max(p_tsp[2], f_tsp[2])
+  start_year    <- floor(start_dec + 1e-9)
+  start_quarter <- round((start_dec - start_year) * 4 + 1)
+  n_total <- round((end_dec - start_dec) * 4 + 1)
+
+  p_offset <- round((p_tsp[1] - start_dec) * 4)
+  f_offset <- round((f_tsp[1] - start_dec) * 4)
+  p_v <- as.numeric(primary)
+  f_v <- as.numeric(fallback)
+
+  out <- rep(NA_real_, n_total)
+  # Fill fallback first
+  if (length(f_v) > 0L) {
+    f_idx <- seq(f_offset + 1L, length.out = length(f_v))
+    keep <- f_idx >= 1L & f_idx <= n_total
+    out[f_idx[keep]] <- f_v[keep]
+  }
+  # Then overlay primary where it has non-NA values
+  if (length(p_v) > 0L) {
+    p_idx <- seq(p_offset + 1L, length.out = length(p_v))
+    keep <- p_idx >= 1L & p_idx <= n_total & !is.na(p_v)
+    out[p_idx[keep]] <- p_v[keep]
+  }
+  bimets::TIMESERIES(out, START = c(start_year, start_quarter), FREQ = 4)
+}
+
 # Return c(first_nonna_quarter, last_nonna_quarter) as decimal years
-# (e.g. 1959.5 = 1959Q3). c(NA, NA) if the series is all-NA.
+# (e.g. 1959.5 = 1959Q3). c(NA, NA) if the series is all-NA. Kept for
+# tests that exercised the old coverage-based rule.
 nonna_range <- function(ts) {
   vals <- as.numeric(ts)
   nonna_pos <- which(!is.na(vals))
