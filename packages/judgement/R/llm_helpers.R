@@ -117,13 +117,31 @@ system_prompt_propose <- function() {
     "Rules of engagement:",
     "  1. You may only adjust equations flagged adjustable in the catalogue below.",
     "  2. Every adjustment MUST include a rationale lifted from the narrative.",
-    "  3. Calibrate magnitudes to the typical_af_sd field; one standard deviation",
-    "     is a meaningful but not extreme adjustment. Going beyond 2x typical_af_sd",
-    "     requires explicit narrative justification.",
-    "  4. Use decay_50 as the default tail rule for shocks (the EViews convention).",
-    "     Use carry for persistent regime changes, zero for one-off announcements.",
-    "  5. Prefer fewer, targeted adjustments over many small ones.",
-    "  6. If the narrative is silent on quantitative changes, return an empty",
+    "  3. CRITICAL — the add-factor value goes on the equation's RESIDUAL, in",
+    "     the LHS's natural units. Read the `units` column carefully:",
+    "       * units=log_diff: residual is in quarterly LOG CHANGE. Value 0.001",
+    "         is +0.1pp on the quarterly inflation/growth rate, ≈ +0.4pp",
+    "         annualised. NEVER set values > 0.01/quarter unless the narrative",
+    "         calls out a crisis-level shock. A naive value of 0.1 means +10pp",
+    "         per quarter, which compounds catastrophically.",
+    "       * units=level: residual is in the variable's level units. For an",
+    "         unemployment-rate equation (LUR), value -0.1 is -0.1pp/quarter",
+    "         on LUR's first difference; over 20 quarters that's -2pp.",
+    "       * units=percent: residual is in percentage points. NCR/N2R/N10R",
+    "         residuals at value 0.25 are +25 basis points / quarter.",
+    "  4. Calibrate magnitudes to the typical_af_sd field (already expressed in",
+    "     the LHS's natural units). One standard deviation is a meaningful but",
+    "     not extreme adjustment. Going beyond 2x typical_af_sd requires",
+    "     explicit narrative justification.",
+    "  5. Adjustment LENGTH — `values` must have exactly horizon_end -",
+    "     horizon_start + 1 quarters. Count carefully: 2025Q4 to 2027Q4 is 9",
+    "     quarters (Q4 + 4 + 4), not 8 or 32. The parser will warn and",
+    "     truncate/pad on mismatch but accurate counts produce better solves.",
+    "  6. Use decay_50 as the default tail rule for shocks (the EViews",
+    "     convention). Use carry for persistent regime changes, zero for",
+    "     one-off announcements.",
+    "  7. Prefer fewer, targeted adjustments over many small ones.",
+    "  8. If the narrative is silent on quantitative changes, return an empty",
     "     adjustments array.",
     "",
     "MARTIN equation catalogue (adjustable equations only):",
@@ -197,11 +215,24 @@ parse_proposal_to_adjustment <- function(p,
          paste(missing, collapse = ", "), call. = FALSE)
   }
   horizon <- quarter_seq(p$horizon_start, p$horizon_end)
+  # LLMs miscount horizons by 1-3 quarters fairly routinely. Rather than
+  # rejecting the whole proposal (and losing useful judgement), normalize
+  # to the horizon length: truncate if values is too long, repeat the
+  # last value if too short. The forecaster can correct in review.
   if (length(p$values) != length(horizon)) {
-    stop(sprintf(
-      "Proposal on %s: values has length %d but horizon is %d quarters.",
-      p$equation, length(p$values), length(horizon)),
+    warning(sprintf(
+      "Proposal on %s: LLM returned %d values for %d-quarter horizon; %s.",
+      p$equation, length(p$values), length(horizon),
+      if (length(p$values) > length(horizon)) "truncating"
+      else "padding with last value"),
       call. = FALSE)
+    if (length(p$values) > length(horizon)) {
+      p$values <- p$values[seq_len(length(horizon))]
+    } else {
+      n_pad <- length(horizon) - length(p$values)
+      p$values <- c(p$values,
+                    rep(p$values[length(p$values)], n_pad))
+    }
   }
   adjustment(
     equation        = p$equation,
@@ -211,8 +242,10 @@ parse_proposal_to_adjustment <- function(p,
     channel         = if (!is.null(p$channel)) p$channel else NA_character_,
     expected_effect = if (!is.null(p$expected_effect))
                         p$expected_effect else NA_character_,
-    confidence      = p$confidence,
-    tail            = p$tail,
+    # ellmer's type_enum returns factors; adjustment() uses match.arg
+    # which needs character.
+    confidence      = as.character(p$confidence),
+    tail            = as.character(p$tail),
     owner           = owner,
     round_id        = round_id,
     source          = source

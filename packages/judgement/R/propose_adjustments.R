@@ -62,15 +62,32 @@ propose_adjustments <- function(narrative,
                    model = model)
   result <- chat$chat_structured(prompt, type = proposal_schema())
 
-  if (is.null(result$adjustments) || length(result$adjustments) == 0L) {
+  if (is.null(result$adjustments) ||
+      (is.data.frame(result$adjustments) && nrow(result$adjustments) == 0L) ||
+      (!is.data.frame(result$adjustments) &&
+       length(result$adjustments) == 0L)) {
     return(adjustment_list())
   }
 
-  proposals <- lapply(result$adjustments, function(p) {
+  # ellmer normalizes `type_array(items = type_object(...))` to a tibble
+  # rather than a list-of-lists. Convert each row to a named list so
+  # parse_proposal_to_adjustment() can treat it uniformly.
+  proposals <- if (is.data.frame(result$adjustments)) {
+    lapply(seq_len(nrow(result$adjustments)), function(i) {
+      row <- as.list(result$adjustments[i, , drop = FALSE])
+      # list-columns come back wrapped (e.g. `values` is a list of length 1
+      # containing the actual numeric vector); unwrap.
+      lapply(row, function(x) if (is.list(x) && length(x) == 1L) x[[1]] else x)
+    })
+  } else {
+    result$adjustments
+  }
+
+  parsed <- lapply(proposals, function(p) {
     parse_proposal_to_adjustment(p, round_id = round_id, owner = owner,
                                  source = "llm")
   })
-  do.call(adjustment_list, proposals)
+  do.call(adjustment_list, parsed)
 }
 
 format_historical_afs <- function(historical_afs) {

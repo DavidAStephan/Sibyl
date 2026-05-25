@@ -113,11 +113,25 @@ compare_narrative_to_description <- function(narrative,
   chat <- get_chat(chat, system_prompt = sysprompt, model = model)
   result <- chat$chat_structured(prompt, type = comparison_schema())
 
-  tbl <- tibble::tibble(
-    claim  = vapply(result$claims, `[[`, character(1), "claim"),
-    status = vapply(result$claims, `[[`, character(1), "status"),
-    note   = vapply(result$claims, `[[`, character(1), "note")
-  )
-  attr(tbl, "overall_match") <- result$overall_match
+  # ellmer normalizes `type_array(items = type_object(...))` to a tibble
+  # rather than a list-of-lists. Handle both shapes.
+  tbl <- if (is.data.frame(result$claims)) {
+    tibble::tibble(
+      claim  = as.character(result$claims$claim),
+      status = as.character(result$claims$status),
+      note   = as.character(result$claims$note)
+    )
+  } else if (length(result$claims) == 0L) {
+    tibble::tibble(claim = character(),
+                   status = character(),
+                   note = character())
+  } else {
+    tibble::tibble(
+      claim  = vapply(result$claims, `[[`, character(1), "claim"),
+      status = vapply(result$claims, `[[`, character(1), "status"),
+      note   = vapply(result$claims, `[[`, character(1), "note")
+    )
+  }
+  attr(tbl, "overall_match") <- as.character(result$overall_match)
   tbl
 }
