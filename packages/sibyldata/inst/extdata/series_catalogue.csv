@@ -233,3 +233,4 @@ IAD_W_GC,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for governmen
 IAD_W_GI,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for government investment,Ratio,NA
 IAD_W_I,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for private investment,Ratio,NA
 IAD_W_X,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for exports,Ratio,NA
+NBR,rba,F05_FILRLBWAV,F05,M,mean,direct,Business borrowing rate (historical RBA F05 weighted-average; deprecated 2019Q3 but spans 1978-2019),Percent per annum,NA

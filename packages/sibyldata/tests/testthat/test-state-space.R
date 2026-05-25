@@ -136,6 +136,31 @@ test_that("fit_nairu_kfas recovers a TLUR series correlated with the fixture", {
 
 # --- RSTAR ------------------------------------------------------------------
 
+test_that("fit_rstar_kfas_full produces plausible RSTAR estimates on fixture", {
+  skip_if_not_installed("martin")
+  skip_if_no_kfas()
+  fx <- martin::read_fixture()
+  fit <- sibyldata:::fit_rstar_kfas_full(fx, sample_start = "1986Q3")
+  e <- as.numeric(fit$RSTAR)
+  f <- as.numeric(fx$RSTAR)
+  m <- !is.na(e) & !is.na(f)
+
+  # The faithful 11-state port is less accurate than the simple smoother
+  # (because the OLS-pre-estimated structural parameters compound state
+  # uncertainty), but on fixture inputs it should at least produce
+  # plausible values and weak positive correlation with the EViews
+  # output.
+  expect_gt(cor(e[m], f[m]), 0.3)
+  # Reasonable range — neutral real cash rates are in low single digits
+  # even on the EViews-published bounds. Allow generous bracket.
+  expect_true(all(e[m] > -10 & e[m] < 15))
+  # Auxiliary states should also be returned.
+  expect_true(!is.null(fit$YGAP))
+  expect_true(!is.null(fit$YPOT))
+  expect_true(!is.null(fit$G))
+  expect_true(!is.null(fit$Z))
+})
+
 test_that("fit_rstar_kfas recovers an RSTAR series correlated with the fixture", {
   skip_if_not_installed("martin")
   skip_if_no_kfas()

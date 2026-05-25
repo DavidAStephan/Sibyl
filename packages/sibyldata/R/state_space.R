@@ -176,20 +176,60 @@ apply_state_space_trends <- function(database, catalogue = series_catalogue()) {
     if (!is.null(fit)) database[["TLUR"]] <- fit$TLUR
   }
 
-  # RSTAR — neutral rate as smoothed real cash rate (v0 simplification of
-  # rstar.prg's 11-state model; see fit_rstar_kfas docstring).
+  # RSTAR — defaults to the simple smoothed-real-cash-rate fit
+  # (fit_rstar_kfas), which is more numerically stable on live data
+  # than the faithful 11-state Okun-Phillips port (fit_rstar_kfas_full).
+  # The full port is preserved as opt-in via the
+  # `SIBYL_RSTAR_FULL_PORT=TRUE` environment variable — useful for
+  # auxiliary states (YGAP, YPOT, G, Z) and for diagnostic comparison,
+  # but on live data its OLS pre-estimation of structural parameters
+  # frequently produces unstable RSTAR estimates (range exceeding
+  # \\u00b125 percentage points). Setting the env var enables the
+  # full port with the simple smoother as a sanity-check fallback when
+  # the full estimate falls outside a plausible range.
   if (is.null(database[["RSTAR"]]) &&
       !is.null(database[["NCR"]]) &&
       !is.null(database[["PTM"]])) {
-    fit <- tryCatch(
-      fit_rstar_kfas(database, sample_start = "1986Q3"),
-      error = function(e) {
-        warning("apply_state_space_trends: RSTAR fit failed (",
-                conditionMessage(e), "); skipping RSTAR.",
-                call. = FALSE)
-        NULL
+    use_full <- identical(Sys.getenv("SIBYL_RSTAR_FULL_PORT", "FALSE"),
+                          "TRUE")
+    full_inputs_ok <- !is.null(database[["Y"]]) &&
+                      !is.null(database[["LUR"]]) &&
+                      !is.null(database[["PI_E"]])
+    fit <- NULL
+    if (use_full && full_inputs_ok) {
+      fit_full <- tryCatch(
+        fit_rstar_kfas_full(database, sample_start = "1986Q3"),
+        error = function(e) {
+          warning("apply_state_space_trends: RSTAR full fit failed (",
+                  conditionMessage(e),
+                  "); falling back to simple smoother.",
+                  call. = FALSE)
+          NULL
+        }
+      )
+      if (!is.null(fit_full)) {
+        rng <- range(as.numeric(fit_full$RSTAR), na.rm = TRUE, finite = TRUE)
+        if (is.finite(rng[1]) && is.finite(rng[2]) &&
+            rng[1] > -10 && rng[2] < 15) {
+          fit <- fit_full
+        } else {
+          warning(sprintf(
+            "apply_state_space_trends: RSTAR full port out of plausible range [%.1f, %.1f]; falling back to simple smoother.",
+            rng[1], rng[2]), call. = FALSE)
+        }
       }
-    )
+    }
+    if (is.null(fit)) {
+      fit <- tryCatch(
+        fit_rstar_kfas(database, sample_start = "1986Q3"),
+        error = function(e) {
+          warning("apply_state_space_trends: RSTAR fit failed (",
+                  conditionMessage(e), "); skipping RSTAR.",
+                  call. = FALSE)
+          NULL
+        }
+      )
+    }
     if (!is.null(fit)) database[["RSTAR"]] <- fit$RSTAR
   }
 
@@ -739,6 +779,345 @@ fit_rstar_kfas <- function(database, sample_start = "1986Q3") {
     param_name   = "rcash"
   )
   list(RSTAR = fit_llt$TLEVEL)
+}
+
+#' Fit the faithful 11-state RSTAR Okun-Phillips state-space
+#'
+#' Full KFAS port of `rstar.prg` (with state-augmented intercept handling).
+#' The EViews state vector is 11-dimensional:
+#'
+#'   alpha = (ygap, ygapL1, ygapL2, ygapL3, ypot, g, NAIRU, NAIRUL1,
+#'            nrate, nrateL1, z)
+#'
+#' We add a 12th constant `ONE` state so the time-varying intercept on
+#' the ygap equation (an exogenous function of `rcash` lags) can be
+#' encoded via a time-varying T matrix entry T[1, 12, t]. The signal
+#' equations are:
+#'
+#'   lrgdp_t = ypot_t + ygap_t                            (deterministic identity)
+#'   LUR_t   = NAIRU_t + beta_1 * (0.4 * ygap_t + 0.3 * ygapL1_t +
+#'                                 0.2 * ygapL2_t + 0.1 * ygapL3_t) + e2
+#'   dlptm_t = (1 - gamma_1) * pi_eq_t +
+#'             gamma_1/3 * (dlptm_{t-1} + dlptm_{t-2} + dlptm_{t-3}) +
+#'             gamma_2 * (LUR_{t-1} - NAIRUL1_t) + e3
+#'
+#' Structural parameters (alpha_1..3, beta_1, gamma_1..2) are
+#' pre-estimated via OLS using HP-like smoothed proxies as initial
+#' state values; KFAS then estimates the five state-innovation variances
+#' (sigma_1, sigma_4..7) via `fitSSM`. The dlptm signal's lagged-inflation
+#' AR(3) and pi_eq terms are pre-subtracted from the observation to give
+#' a modified observation y3_mod_t = -gamma_2 * NAIRUL1_t + e3 that
+#' KFAS handles linearly.
+#'
+#' Returns RSTAR (the smoothed `nrate` state) plus the auxiliary states
+#' (`YGAP`, `YPOT`, `G`, `Z`) as bimets ts for diagnostics.
+#'
+#' @param database Named list of bimets ts (needs Y, PTM, LUR, NCR, PI_E).
+#' @param sample_start `"YYYYQq"` string. Default `"1986Q3"` matches
+#'   rstar.prg's smpl.
+#' @return List with `RSTAR`, `YGAP`, `YPOT`, `G`, `Z` (bimets ts).
+#' @keywords internal
+fit_rstar_kfas_full <- function(database, sample_start = "1986Q3") {
+  SSMcustom <- KFAS::SSMcustom
+
+  required <- c("Y", "PTM", "LUR", "NCR", "PI_E")
+  for (v in required) {
+    if (is.null(database[[v]])) {
+      stop("fit_rstar_kfas_full: missing input ", v, call. = FALSE)
+    }
+  }
+
+  ts_meta <- ts_to_meta(database[["LUR"]])
+  n_total <- length(as.numeric(database[["LUR"]]))
+
+  align <- function(x) {
+    other_tsp <- stats::tsp(x); other_v <- as.numeric(x)
+    other_y <- floor(other_tsp[1] + 1e-9)
+    other_q <- round((other_tsp[1] - other_y) * 4 + 1)
+    offset <- (other_y - ts_meta$start_year) * 4L +
+              (other_q - ts_meta$start_quarter)
+    out <- rep(NA_real_, n_total)
+    lo <- max(1L, 1L + offset); hi <- min(n_total, length(other_v) + offset)
+    if (lo <= hi) out[lo:hi] <- other_v[(lo - offset):(hi - offset)]
+    out
+  }
+  lur <- as.numeric(database[["LUR"]])
+  y_gdp <- align(database[["Y"]])
+  ptm <- align(database[["PTM"]])
+  ptm[!is.na(ptm) & ptm <= 0] <- NA_real_
+  ncr <- align(database[["NCR"]])
+  pi_e <- align(database[["PI_E"]])
+
+  lrgdp <- log(y_gdp) * 100  # log levels times 100 (pp-scale, matches EViews)
+  dlptm <- c(NA, 100 * diff(log(ptm)))
+  rcash <- ncr - 4 * dlptm
+  pi_eq <- ((1 + pi_e / 100) ^ (1 / 4) - 1) * 100
+
+  # Sanitize non-finite (PTM zeros etc.)
+  lrgdp[!is.finite(lrgdp)] <- NA_real_
+  dlptm[!is.finite(dlptm)] <- NA_real_
+  rcash[!is.finite(rcash)] <- NA_real_
+  pi_eq[!is.finite(pi_eq)] <- NA_real_
+
+  start_idx <- ts_meta$quarter_index(sample_start)
+  if (is.na(start_idx) || start_idx < 1L) start_idx <- 1L
+
+  # ---- HP-like smoothed proxies (centred MA) for pre-estimation ----
+  smooth_ma <- function(x, win = 20L) {
+    out <- stats::filter(x, rep(1 / win, win), sides = 2)
+    out <- as.numeric(out)
+    nonna <- which(!is.na(out))
+    if (length(nonna) >= 1L) {
+      out[seq_len(nonna[1] - 1L)] <- out[nonna[1]]
+      tlast <- tail(nonna, 1L)
+      if (tlast < length(out)) out[(tlast + 1L):length(out)] <- out[tlast]
+    }
+    out
+  }
+  ypot_init <- smooth_ma(lrgdp)
+  ygap_init <- lrgdp - ypot_init
+  nairu_init <- smooth_ma(lur)
+  nrate_init <- smooth_ma(rcash)
+  g_init     <- smooth_ma(c(NA, diff(ypot_init)))
+  z_init     <- nrate_init - g_init
+
+  # ---- OLS pre-estimation of alpha1, alpha2, alpha3, beta1, gamma1, gamma2
+  # Lag helper.
+  lagk <- function(x, k) c(rep(NA_real_, k), x[seq_len(length(x) - k)])
+
+  mask <- seq.int(max(start_idx, 5L), n_total)
+
+  # 1. Output gap equation:
+  # ygap = alpha1*ygap(-1) + alpha2*ygap(-2) -
+  #        alpha3/2 * (rcash(-1) - nrate(-1) + rcash(-2) - nrate(-2)) + e1
+  rhs_gap_diff <- (lagk(rcash, 1) - lagk(nrate_init, 1) +
+                   lagk(rcash, 2) - lagk(nrate_init, 2))
+  df_gap <- data.frame(
+    y  = ygap_init[mask],
+    g1 = lagk(ygap_init, 1)[mask],
+    g2 = lagk(ygap_init, 2)[mask],
+    rd = rhs_gap_diff[mask]
+  )
+  df_gap <- df_gap[complete.cases(df_gap), ]
+  alpha1 <- 0.7; alpha2 <- 0.1; alpha3 <- 0.1
+  if (nrow(df_gap) > 5L) {
+    fit_g <- tryCatch(
+      stats::lm(y ~ g1 + g2 + I(-rd / 2) - 1, data = df_gap),
+      error = function(e) NULL
+    )
+    if (!is.null(fit_g)) {
+      co <- stats::coef(fit_g)
+      if (!is.na(co["g1"]))         alpha1 <- co["g1"]
+      if (!is.na(co["g2"]))         alpha2 <- co["g2"]
+      if (!is.na(co["I(-rd/2)"]))   alpha3 <- co["I(-rd/2)"]
+    }
+  }
+
+  # 2. Okun's law:
+  # LUR = nairu + beta1 * (0.4*ygap + 0.3*ygap(-1) + 0.2*ygap(-2) + 0.1*ygap(-3))
+  okun_rhs <- 0.4 * ygap_init + 0.3 * lagk(ygap_init, 1) +
+              0.2 * lagk(ygap_init, 2) + 0.1 * lagk(ygap_init, 3)
+  df_okun <- data.frame(
+    y_lur = lur[mask] - nairu_init[mask],
+    okun  = okun_rhs[mask]
+  )
+  df_okun <- df_okun[complete.cases(df_okun), ]
+  beta1 <- -0.3
+  if (nrow(df_okun) > 5L) {
+    fit_o <- tryCatch(
+      stats::lm(y_lur ~ okun - 1, data = df_okun),
+      error = function(e) NULL
+    )
+    if (!is.null(fit_o)) {
+      co <- stats::coef(fit_o)["okun"]
+      if (!is.na(co)) beta1 <- co
+    }
+  }
+
+  # 3. Phillips curve:
+  # dlptm = (1-gamma1)*pi_eq + gamma1/3*(dlptm(-1)+dlptm(-2)+dlptm(-3)) +
+  #         gamma2*(LUR(-1) - nairu(-1))
+  ar3 <- (lagk(dlptm, 1) + lagk(dlptm, 2) + lagk(dlptm, 3)) / 3
+  gap_lag <- lagk(lur, 1) - lagk(nairu_init, 1)
+  # Rearrange: dlptm - pi_eq = -gamma1*pi_eq + gamma1*ar3 + gamma2*gap_lag
+  #                          = gamma1*(ar3 - pi_eq) + gamma2*gap_lag
+  df_phil <- data.frame(
+    y  = (dlptm - pi_eq)[mask],
+    ar = (ar3 - pi_eq)[mask],
+    gl = gap_lag[mask]
+  )
+  df_phil <- df_phil[complete.cases(df_phil), ]
+  gamma1 <- 0.5; gamma2 <- -0.1
+  if (nrow(df_phil) > 5L) {
+    fit_p <- tryCatch(
+      stats::lm(y ~ ar + gl - 1, data = df_phil),
+      error = function(e) NULL
+    )
+    if (!is.null(fit_p)) {
+      co <- stats::coef(fit_p)
+      if (!is.na(co["ar"])) gamma1 <- co["ar"]
+      if (!is.na(co["gl"])) gamma2 <- co["gl"]
+    }
+  }
+
+  # ---- Build the 12-state KFAS model ----
+  # State indices:
+  #   1: ygap, 2: ygapL1, 3: ygapL2, 4: ygapL3, 5: ypot, 6: g,
+  #   7: NAIRU, 8: NAIRUL1, 9: nrate, 10: nrateL1, 11: z, 12: ONE
+  m <- 12L
+  T_base <- matrix(0, m, m)
+  T_base[1, 1]  <- alpha1
+  T_base[1, 2]  <- alpha2
+  T_base[1, 9]  <- alpha3 / 2
+  T_base[1, 10] <- alpha3 / 2
+  T_base[2, 1]  <- 1
+  T_base[3, 2]  <- 1
+  T_base[4, 3]  <- 1
+  T_base[5, 5]  <- 1
+  T_base[5, 6]  <- 1
+  T_base[6, 6]  <- 1
+  T_base[7, 7]  <- 1
+  T_base[8, 7]  <- 1
+  T_base[9, 6]  <- 4
+  T_base[9, 11] <- 1
+  T_base[10, 9] <- 1
+  T_base[11, 11] <- 1
+  T_base[12, 12] <- 1
+
+  # Time-varying T to encode the rcash-driven intercept on ygap state.
+  # At time t, ygap_t = ... -alpha3/2*(rcash_{t-1} + rcash_{t-2}) so we set
+  # T[1, 12, t] = -alpha3/2 * (rcash_{t-1} + rcash_{t-2}).
+  T_arr <- array(T_base, dim = c(m, m, n_total))
+  rcash_intercept <- -alpha3 / 2 * (lagk(rcash, 1) + lagk(rcash, 2))
+  for (t in seq_len(n_total)) {
+    val <- rcash_intercept[t]
+    if (is.finite(val)) T_arr[1, 12, t] <- val
+  }
+
+  # R matrix (12 x 5). eta = (e1, e4, e5, e6, e7)
+  # e1 -> ygap; e4 -> NAIRU; e5 -> ypot; e6 -> z and nrate;
+  # e7 -> g and 4x into nrate
+  R_mat <- matrix(0, m, 5)
+  R_mat[1, 1]  <- 1   # e1 -> ygap
+  R_mat[7, 2]  <- 1   # e4 -> NAIRU
+  R_mat[5, 3]  <- 1   # e5 -> ypot
+  R_mat[11, 4] <- 1   # e6 -> z
+  R_mat[6, 5]  <- 1   # e7 -> g
+  R_mat[9, 4]  <- 1   # e6 -> nrate
+  R_mat[9, 5]  <- 4   # 4*e7 -> nrate
+
+  Q_init <- diag(c(0.5, 0.05, 0.5, 0.1, 0.02))  # placeholder variances
+
+  # Z matrix (3 x 12) — three signals
+  Z_mat <- matrix(0, 3, m)
+  # lrgdp = ygap + ypot
+  Z_mat[1, 1] <- 1
+  Z_mat[1, 5] <- 1
+  # LUR = beta1*(0.4*ygap + 0.3*ygapL1 + 0.2*ygapL2 + 0.1*ygapL3) + NAIRU
+  Z_mat[2, 1] <- 0.4 * beta1
+  Z_mat[2, 2] <- 0.3 * beta1
+  Z_mat[2, 3] <- 0.2 * beta1
+  Z_mat[2, 4] <- 0.1 * beta1
+  Z_mat[2, 7] <- 1
+  # dlptm_mod = -gamma2 * NAIRUL1 + e3
+  Z_mat[3, 8] <- -gamma2
+
+  # Modified dlptm observation:
+  #   dlptm - (1-gamma1)*pi_eq - gamma1/3*(lag1+lag2+lag3) - gamma2*LUR(-1)
+  dlptm_mod <- dlptm - (1 - gamma1) * pi_eq -
+               gamma1 / 3 * (lagk(dlptm, 1) + lagk(dlptm, 2) + lagk(dlptm, 3)) -
+               gamma2 * lagk(lur, 1)
+  dlptm_mod[!is.finite(dlptm_mod)] <- NA_real_
+
+  Y <- cbind(lrgdp = lrgdp, LUR = lur, dlptm = dlptm_mod)
+  Y[!is.finite(Y)] <- NA_real_
+  if (start_idx > 1L) Y[seq_len(start_idx - 1L), ] <- NA_real_
+
+  # Initial state mean and covariance.
+  # Use HP-smoothed proxies at start_idx; the ONE state has value 1.
+  a1 <- matrix(c(
+    ygap_init[start_idx],   ygap_init[start_idx - 1L],
+    ygap_init[start_idx - 2L], ygap_init[start_idx - 3L],
+    ypot_init[start_idx],   g_init[start_idx],
+    nairu_init[start_idx],  nairu_init[start_idx - 1L],
+    nrate_init[start_idx],  nrate_init[start_idx - 1L],
+    z_init[start_idx],      1
+  ), nrow = m)
+  # Replace any NAs in a1 with sensible defaults.
+  a1_defaults <- c(0, 0, 0, 0,
+                   if (is.finite(ypot_init[start_idx])) ypot_init[start_idx] else 1000,
+                   0.005 * 100, 5, 5, 3, 3, 0, 1)
+  na_idx <- which(is.na(a1))
+  if (length(na_idx)) a1[na_idx, 1] <- a1_defaults[na_idx]
+
+  # vprior from rstar.prg posterior modes (line 55-66)
+  P1 <- diag(c(0.38, 0.38, 0.38, 0.38, 0.54, 0.05, 0.15, 0.15, 0.3, 0.3, 0.22, 0))
+  P1inf <- diag(c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))  # all informed
+
+  # SSMcustom expects T as either matrix or 3D array. KFAS quirk: pass the
+  # 3D array directly.
+  model <- KFAS::SSModel(
+    Y ~ -1 + SSMcustom(
+      Z = Z_mat,
+      T = T_arr,
+      R = R_mat,
+      Q = Q_init,
+      a1 = a1,
+      P1 = P1,
+      P1inf = P1inf,
+      state_names = c("ygap", "ygapL1", "ygapL2", "ygapL3",
+                      "ypot", "g", "NAIRU", "NAIRUL1",
+                      "nrate", "nrateL1", "z", "ONE")
+    ),
+    H = diag(c(1e-8, 0.1, 0.1))  # lrgdp identity ~ 0, LUR + dlptm ~ estimated
+  )
+
+  # Five free parameters: log variances of (e1, e4, e5, e6, e7) plus
+  # log variances of LUR signal (e2) and dlptm signal (e3) = 7 free pars.
+  update_fn <- function(pars, model) {
+    q_vals <- exp(pars[1:5])
+    model$Q[, , 1] <- diag(q_vals)
+    model$H[2, 2, 1] <- exp(pars[6])
+    model$H[3, 3, 1] <- exp(pars[7])
+    # Keep H[1, 1] tiny (lrgdp identity).
+    model$H[1, 1, 1] <- 1e-8
+    model
+  }
+  fit <- tryCatch(
+    KFAS::fitSSM(model,
+                 inits = c(log(0.5), log(0.05), log(0.5), log(0.1), log(0.02),
+                           log(0.1), log(0.1)),
+                 updatefn = update_fn, method = "BFGS"),
+    error = function(e) NULL
+  )
+  if (is.null(fit) || fit$optim.out$convergence != 0L) {
+    if (!is.null(fit)) {
+      warning(sprintf("fit_rstar_kfas_full: optim did not converge (code %d)",
+                      fit$optim.out$convergence), call. = FALSE)
+    } else {
+      warning("fit_rstar_kfas_full: fitSSM failed", call. = FALSE)
+      return(NULL)
+    }
+  }
+  ks <- tryCatch(KFAS::KFS(fit$model, smoothing = "state"),
+                 error = function(e) NULL)
+  if (is.null(ks)) {
+    warning("fit_rstar_kfas_full: KFS smoothing failed", call. = FALSE)
+    return(NULL)
+  }
+
+  pick <- function(state_name) {
+    vec <- as.numeric(ks$alphahat[, state_name])
+    if (start_idx > 1L) vec[seq_len(start_idx - 1L)] <- NA_real_
+    ts_meta$as_bimets(vec)
+  }
+  list(
+    RSTAR = pick("nrate"),
+    YGAP  = pick("ygap"),
+    YPOT  = pick("ypot"),
+    G     = pick("g"),
+    Z     = pick("z")
+  )
 }
 
 # Internal: extract the bimets ts metadata needed to round-trip a numeric

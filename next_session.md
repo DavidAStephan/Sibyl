@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **388 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **395 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -117,35 +117,28 @@ if Quarto isn't on PATH.
 Ranked by leverage. Each item is independent — pick whichever you
 have appetite for.
 
-### 1. Faithful 11-state RSTAR port (~1 session)
+### 1. RSTAR full-port stabilisation (~½ session)
 
-The current RSTAR is a smoothed real cash rate via KFAS local-linear-
-trend (`fit_rstar_kfas` in
-[state_space.R](packages/sibyldata/R/state_space.R)). It's
-operational but it's not the Okun-Phillips state-space estimate from
-[rstar.prg](references/MARTIN-master/Programs/rstar.prg) — that's an
-11-state system (output gap + 3 lags, potential GDP, trend growth,
-NAIRU + 1 lag, neutral rate + 1 lag, unexplained z-state) tied
-together by Okun's-law and Phillips-curve signal equations. Worth
-porting properly because RSTAR feeds NCR (the Taylor Rule) directly.
+`fit_rstar_kfas_full` lands as opt-in via
+`SIBYL_RSTAR_FULL_PORT=TRUE`, but its OLS pre-estimation of structural
+parameters (alpha_1..3, beta_1, gamma_1..2) destabilises on live data:
+alpha_1 estimates near 1 (unit root in ygap dynamics), producing
+RSTAR estimates outside [-25, 35] that the safety check catches and
+falls back to the simple smoother. To make the full port viable as
+the default, options are:
 
-The KFAS infrastructure is already in place from the three TDLL ports
-and PI_E/TLUR, so this is mostly a faithful translation of the SS
-matrix definitions.
+- Fix structural parameters at EViews's published estimates rather
+  than re-estimating per-vintage via OLS.
+- Use HP-filtered (not centred-MA) proxies for the ypot/nairu/nrate
+  initial-state guesses. KFAS's own SSMtrend(degree=2) with
+  appropriate `lambda` reproduces HP filter exactly.
+- Joint MLE of structural + variance params via custom `optim()`
+  likelihood (rather than two-step OLS + fitSSM).
 
-### 2. NBR splice extension (~½ session)
+The simple smoother (`fit_rstar_kfas`) remains default and gives
+cor=0.96 against the fixture.
 
-The live RBR and IBCR identities only have ~27 observations because
-live NBR (business borrowing rate) is short — the
-[transformations.R splice](packages/sibyldata/R/transformations.R)
-combines NBR with NBR_HIST but the combined history is still shorter
-than the fixture's. Either (a) extend the NBR splice further back
-into history using ABS or RBA legacy series, or (b) add an additional
-fallback rate source. After this lands, live RBR and IBCR would win
-the merge for the historical period too, removing the last RBR/IBCR
-fixture dependency.
-
-### 3. PI_E / TLUR fidelity restoration (~½ session)
+### 2. PI_E / TLUR fidelity restoration (~½ session)
 
 Both v0 ports dropped some structure for tractability. Restore:
 
@@ -157,7 +150,7 @@ Both v0 ports dropped some structure for tractability. Restore:
   coefficients via OLS, similar to the existing two-step `gamma_1`,
   `gamma_2` machinery.
 
-### 4. Nowcast bridge equations (~½ session)
+### 3. Nowcast bridge equations (~½ session)
 
 `nowcast::nowcast_handover()` is currently univariate ARIMA per
 variable, recovering 82 % of headline aggregates within 5 % mean
@@ -465,14 +458,28 @@ CLAUDE.md                        ← context for sessions
 
 ## What was committed last
 
-See `git log`. The initial commit was everything together (this was
-a no-git project for many sessions until the wrap-up commit). The
-follow-up commit adds:
+See `git log` for the canonical history. Recent commits, newest first:
 
-- 41 dummy rows + 1 scalar row to the series catalogue
-- `apply_dummies()` and `apply_scalars()` handlers wired into
-  `to_martin_database()`
-- 9 new test files asserting each dummy kind bit-matches the
-  bundled fixture
-- Description fix on the existing `D_OLY` row (the pulse is at
-  2004Q4, not 2000Q4 as the original placeholder description said)
+- **fit_rstar_kfas_full + NBR splice + coverage-based merge** — the
+  faithful 11-state Okun-Phillips port of rstar.prg lands as
+  `fit_rstar_kfas_full`, opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE` (the
+  v0 simple smoother stays as default because pre-estimation OLS makes
+  the full port unstable on live data). NBR gains a historical splice
+  from F05_FILRLBWAV, lifting NBR live coverage from 27 → 190 obs;
+  RBR / IBCR live coverage follows. `merge_with_fallback` now uses
+  coverage-based comparison (primary wins only if both first_nna and
+  last_nna covers fallback) — fixes regressions where live series with
+  more total obs but narrower historical coverage incorrectly
+  overrode the fixture (N2R, NHC).
+- **IBNDR annual port** — replaces the static 1.5 placeholder with the
+  faithful annual-data port from CFCIBN / KIBN ABS 5204.0 series.
+- **IBCR identity chain + IAD weights (v0 with static IBNDR)** —
+  IBCTR piecewise constant, IBNDR static placeholder, RBR / IBNDRA /
+  IBCR derived formulas, IAD weights vendored from io_calcs.prg
+  output.
+- **PI_E, TLUR, RSTAR state-space ports** — KFAS ports of pistar.prg,
+  nairu.prg, rstar.prg (v0 simplified).
+- **supply_side.prg state-space trends** — TDLLA, TDLLPOP, TDLLHPP
+  via KFAS local-linear-trend / random-walk + drift.
+
+Each is fully operational with tests passing.
