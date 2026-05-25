@@ -24,7 +24,7 @@ Status as of the last commit:
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
 | Round report | renders to `reports/round.html` |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 15/15 targets succeed; LUR-narrative round now hits magnitude target (-1.6pp realised vs -1.5pp narrative) and the round-trip audit surfaces real narrative-vs-model gaps (Taylor Rule + Phillips curve responses). ~20s total wall clock with Haiku across all three LLM steps |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 18/18 targets succeed; pipeline now runs the full iterative-refinement loop (propose → solve → describe → audit → if disagree, refine, repeat). ~1m10s wall clock with Haiku across all LLM steps. Inspectable per-iter history at `tar_load(refinement_history)`. |
 
 The 15 skips are all intentional — live-API tests that require keys
 (FRED_API_KEY, ANTHROPIC_API_KEY) that aren't required for CI.
@@ -192,16 +192,74 @@ cannot lower LUR by 1.5pp without the Taylor Rule and Phillips curve
 responding. The system surfacing genuine narrative-vs-model gaps.
 
 **Follow-ups if you want more polish here:**
-- Option (a) — calibration loop — would close the audit's flagged
-  gaps automatically by re-prompting with the realised numbers and
-  asking for revised proposals. Cheap to add: ~½ session.
+- Option (a) — calibration loop — DONE this session. See item 4.
 - Option (c) — sensitivity matrix — would let the LLM reason about
   multi-equation interactions ahead of time (so it could pre-suppose
   the Taylor-Rule response and add an NCR AF if the narrative wants
   to suppress it). Big payoff but needs ~95 pre-solves + delivery
-  format design. ~1 session.
+  format design. ~1 session. See item 5.
 
-### 4. RSTAR full-port accuracy improvement (~½–1 session)
+### 4. Iterative refinement loop — DONE (option a of item 3)
+
+Implemented `propose_with_refinement()` orchestrator (in
+`packages/judgement/R/propose_adjustments.R`) and wired it into
+`_targets.R` as a new `refined_round` target. The pipeline now runs
+the full agentic loop: propose → solve → describe → audit → if
+disagree, refine → repeat (default `max_iters = 3`).
+
+Key implementation choices:
+- `solve_fn` callback in the orchestrator's signature so judgement
+  stays decoupled from `martin::solve_martin`'s database/horizon
+  arguments. The targets node closes over `database_with_handover`,
+  `horizon`, and `estimation_end`.
+- `refine_adjustments()` is a separate exported function with its own
+  prompt that explicitly tells the LLM it can (a) adjust magnitudes,
+  (b) extend/shorten horizon, (c) add cancelling AFs (e.g. NCR AF to
+  hold the cash-rate path), or (d) drop side-effect-laden AFs.
+- `pick_best_iteration()` scores by audit verdict
+  (agree > partial > disagree), ties broken by earliest. Necessary
+  because the LLM over-corrects in practice — saw a live run where
+  iter 2 added cancelling AFs but iter 3 cranked them up too far,
+  flipping NCR below baseline and producing -2.9% deflation. With
+  best-iter selection the orchestrator returns iter 1 (the cleanest
+  proposal) instead of the latest (worst) one.
+- New `adjustment()` source value `"llm-refined"` distinguishes
+  refined proposals from initial ones in audit trails.
+
+Test coverage: 5 new unit tests using a `fake_chat_queue` that pops a
+queue of structured + free responses across the propose/describe/
+audit/refine call sequence. Cover the audit-already-agrees path, the
+disagree→refine→agree path, max-iters cap, empty-initial-proposal
+early exit, and over-correction best-iter selection.
+
+**Known issue / next-tier problem:** the LLM is non-deterministic on
+equation choice. On one run it correctly picked LUR with the right
+magnitude; on the next it picked TLUR (despite Example B in the
+system prompt being literally about TLUR's slow pass-through), then
+under-shot the magnitude target. The few-shot examples don't always
+override the LLM's own preferences. Two paths to address:
+- Stronger prompt: re-rank equation choice toward "cyclical
+  equation when narrative quantifies cyclical effect."
+- Eval-based selection: when audit returns disagree on a magnitude
+  claim, do one more iter that's explicitly framed as "you chose
+  equation X with value Y, got effect Z far below the target — try
+  a different equation or much larger value."
+
+### 5. Sensitivity-matrix appendix (~1 session)
+
+Pre-solve a unit-shock for each adjustable equation and store the
+resulting deviations on the key aggregates as a static matrix. Feed
+it to the LLM as a "if you adjust X by 1 unit, expect Y to move by Z
+over N quarters" lookup. This closes the calibration gap *before* the
+solve (vs. the iterative loop which closes it *after*), so a single
+propose pass can get magnitudes right.
+
+Cost: ~95 pre-solves at ~1-2s each = ~3 minutes (cacheable, only
+re-run when re-estimation_end changes); plus the prompt-format design
+work. Big payoff because it'd let the LLM reason about multi-equation
+interactions before committing to a proposal.
+
+### 6. RSTAR full-port accuracy improvement (~½–1 session)
 
 `fit_rstar_kfas_full` is now **stable** on live data (fixed-prior
 structural params via `RSTAR_FULL_PARAMS` produce live values in the
@@ -226,7 +284,7 @@ Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
 auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
 expose.
 
-### 5. PI_E / TLUR fidelity restoration — DONE
+### 7. PI_E / TLUR fidelity restoration — DONE
 
 Both v0 ports now have the dropped structure restored:
 
@@ -240,7 +298,7 @@ Both v0 ports now have the dropped structure restored:
   omega_{1..2} (lagged ULC AR). All pre-OLS-estimated; pre-subtracted
   before KFAS sees the modified observations.
 
-### 6. Nowcast bridge equations — DONE
+### 8. Nowcast bridge equations — DONE
 
 True monthly-indicator bridge equations now ship via
 `nowcast::nowcast_handover(method = "bridge_monthly", ...)`.
@@ -277,7 +335,7 @@ Follow-up ideas (none required for v0):
   bridge_monthly when monthly data is fresher than quarterly
 - AR(1) error term on the bridge regression for better intervals
 
-### 7. Faithful state-space accuracy (~1 session)
+### 9. Faithful state-space accuracy (~1 session)
 
 The faithful PI_E and TLUR ports trade a few correlation points
 against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
@@ -586,6 +644,19 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Iterative refinement loop** — closes option (a) of the calibration
+  follow-ups. New `propose_with_refinement()` orchestrator runs the
+  agentic loop in the judgement package; new `refine_adjustments()`
+  takes a prior proposal + audit feedback and re-prompts the LLM to
+  revise. Pipeline wired: `refined_round` target + `refinement_history`
+  for inspection. Includes best-iter selection so the orchestrator
+  doesn't return an over-corrected later iteration — observed in a
+  live LUR run where iter 2 added cancelling NCR/PTM AFs but iter 3
+  cranked them up too far (NCR below baseline, prices -2.9%); the
+  selector correctly returned iter 1. 5 new unit tests with a
+  fake_chat_queue covering the audit-already-agrees, disagree→
+  refine→agree, max-iters cap, empty-initial, and over-correction
+  paths. Pipeline now 18 targets (was 16). Test suite up to 115 pass.
 - **Few-shot examples + variable glossary close the LLM calibration
   gap** — three worked examples in `system_prompt_propose` (PTM sticky
   inflation, TLUR with documented 5x undershoot, LUR direct cyclical)
