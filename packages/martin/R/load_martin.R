@@ -64,6 +64,12 @@ martin_data_fixture <- function() {
 #'   variable name. Eventually produced by
 #'   [sibyldata::to_martin_database()]; for now, by [read_fixture()] in tests.
 #' @param variant Which model file to load. See [model_file_path()].
+#' @param estimation_end Optional `"yyyyQq"` string. When set, rewrites
+#'   every `TSRANGE` line's end date to this quarter before bimets
+#'   loads the model — letting ESTIMATE re-fit the behavioural
+#'   coefficients on data through the supplied end (typically the
+#'   latest National Accounts release). Per-equation start dates are
+#'   preserved. The model file's frozen default is 2019Q3.
 #' @param estimate Logical. If `TRUE` (default), call `bimets::ESTIMATE()`
 #'   after loading data. Skip only for path-checking; the residual slots
 #'   downstream code uses are populated by ESTIMATE.
@@ -71,8 +77,9 @@ martin_data_fixture <- function() {
 #' @return A loaded bimets model object.
 #' @export
 load_martin <- function(database,
-                        variant  = c("af", "identity", "est"),
-                        estimate = TRUE) {
+                        variant         = c("af", "identity", "est"),
+                        estimate        = TRUE,
+                        estimation_end  = NULL) {
   variant <- match.arg(variant)
   if (!is.list(database) || length(database) == 0L) {
     stop("`database` must be a non-empty named list of bimets TIMESERIES.",
@@ -83,7 +90,11 @@ load_martin <- function(database,
          call. = FALSE)
   }
 
-  model_text <- paste(readLines(model_file_path(variant)), collapse = "\n")
+  model_lines <- readLines(model_file_path(variant))
+  if (!is.null(estimation_end)) {
+    model_lines <- rewrite_tsrange_end(model_lines, estimation_end)
+  }
+  model_text <- paste(model_lines, collapse = "\n")
   .suppress_bimets_version_warning({
     m <- bimets::LOAD_MODEL(modelText = model_text)
     m <- bimets::LOAD_MODEL_DATA(m, database)
@@ -92,4 +103,26 @@ load_martin <- function(database,
     }
   })
   m
+}
+
+# Rewrite each `TSRANGE <start_year> <start_quarter> <end_year> <end_quarter>`
+# line in the model text so the end equals `end_quarter` (a "yyyyQq" string),
+# preserving each equation's per-line start date. Used by load_martin's
+# `estimation_end` option to re-estimate behavioural coefficients on a
+# longer sample than the model file's frozen 2019Q3 default.
+rewrite_tsrange_end <- function(lines, end_quarter) {
+  if (!grepl("^[0-9]{4}Q[1-4]$", end_quarter)) {
+    stop("`estimation_end` must be a 'yyyyQq' string (e.g. '2025Q2').",
+         call. = FALSE)
+  }
+  new_year    <- substr(end_quarter, 1, 4)
+  new_quarter <- substr(end_quarter, 6, 6)
+  is_tsrange <- grepl("^TSRANGE ", lines)
+  lines[is_tsrange] <- vapply(lines[is_tsrange], function(ln) {
+    parts <- strsplit(ln, " ")[[1]]
+    # Expected: TSRANGE start_year start_q end_year end_q  (5 tokens)
+    if (length(parts) != 5L) return(ln)
+    paste("TSRANGE", parts[2], parts[3], new_year, new_quarter)
+  }, character(1))
+  lines
 }

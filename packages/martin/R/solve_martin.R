@@ -34,8 +34,14 @@
 #' @param adjustments A `judgement::adjustment_list` (possibly empty or NULL).
 #' @param horizon A length-2 character vector of `c("yyyyQq", "yyyyQq")`
 #'   identifying the inclusive simulation range.
-#' @param coefficients Which coefficient set to use. For v0 only `"frozen"`
-#'   is supported.
+#' @param coefficients Which coefficient set to use. `"frozen"` (default)
+#'   uses the model file's TSRANGE end of 2019Q3 — equivalent to the
+#'   originally-estimated coefficients. `"reestimated"` re-fits every
+#'   behavioural equation over its embedded start through
+#'   `estimation_end`; useful when live data extends past 2019Q3 and you
+#'   want the model's parameters to reflect the post-COVID period.
+#' @param estimation_end Optional `"yyyyQq"` string. Required when
+#'   `coefficients = "reestimated"`. Ignored under `"frozen"`.
 #' @param scenario A label written into the returned tibble.
 #' @param sim_convergence Bimets simulation convergence tolerance.
 #' @param sim_iter_limit  Bimets simulation iteration limit.
@@ -47,12 +53,14 @@ solve_martin <- function(database,
                          adjustments     = NULL,
                          horizon,
                          coefficients    = c("frozen", "reestimated"),
+                         estimation_end  = NULL,
                          scenario        = "baseline",
                          sim_convergence = 1e-6,
                          sim_iter_limit  = 100) {
   coefficients <- match.arg(coefficients)
-  if (coefficients == "reestimated") {
-    stop("Re-estimation is not supported in v0. Use 'frozen'.", call. = FALSE)
+  if (coefficients == "reestimated" && is.null(estimation_end)) {
+    stop("`coefficients = 'reestimated'` requires `estimation_end` ",
+         "(e.g. '2025Q2').", call. = FALSE)
   }
   if (length(horizon) != 2L || !is.character(horizon)) {
     stop("`horizon` must be a length-2 character vector of `yyyyQq`.",
@@ -66,7 +74,10 @@ solve_martin <- function(database,
          call. = FALSE)
   }
 
-  model <- load_martin(database, variant = "af", estimate = TRUE)
+  model <- load_martin(
+    database, variant = "af", estimate = TRUE,
+    estimation_end = if (coefficients == "reestimated") estimation_end else NULL
+  )
 
   start <- judgement_parse_quarter(horizon[1])
   end   <- judgement_parse_quarter(horizon[2])

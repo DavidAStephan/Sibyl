@@ -93,6 +93,13 @@ list(
   # support (DESIGN.md item 7) is needed to extend past the data end.
   tar_target(horizon, c("2010Q1", "2025Q4")),
 
+  # Re-estimation sample end. Behaviorals re-fit on data through this
+  # quarter (overriding the model file's 2019Q3 default). Set to NULL to
+  # use the frozen 2019Q3 coefficients. 2025Q2 picks up post-COVID
+  # inflation / wages dynamics without including the 2025Q3-Q4 tail that
+  # has thinner data coverage for some derived inputs.
+  tar_target(estimation_end, "2025Q2"),
+
   # ---------------------------------------------------------------------------
   # 2. Data — sibyldata (or fixture in v0)
   # ---------------------------------------------------------------------------
@@ -139,10 +146,12 @@ list(
   # ---------------------------------------------------------------------------
   tar_target(baseline,
     martin::solve_martin(
-      database    = database_with_handover,
-      adjustments = NULL,
-      horizon     = horizon,
-      scenario    = "baseline"
+      database       = database_with_handover,
+      adjustments    = NULL,
+      horizon        = horizon,
+      coefficients   = if (is.null(estimation_end)) "frozen" else "reestimated",
+      estimation_end = estimation_end,
+      scenario       = "baseline"
     )
   ),
 
@@ -180,10 +189,12 @@ list(
   # ---------------------------------------------------------------------------
   tar_target(projection,
     martin::solve_martin(
-      database    = database_with_handover,
-      adjustments = approved_adjustments,
-      horizon     = horizon,
-      scenario    = "with_adjustments"
+      database       = database_with_handover,
+      adjustments    = approved_adjustments,
+      horizon        = horizon,
+      coefficients   = if (is.null(estimation_end)) "frozen" else "reestimated",
+      estimation_end = estimation_end,
+      scenario       = "with_adjustments"
     )
   ),
 

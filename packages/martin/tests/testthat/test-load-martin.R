@@ -53,15 +53,39 @@ test_that("load_martin() refuses an empty database", {
   )
 })
 
-test_that("solve_martin() rejects coefficients='reestimated' in v0", {
+test_that("solve_martin() rejects coefficients='reestimated' without estimation_end", {
   expect_error(
     solve_martin(
       database = list(Y = 1),  # never reached; validation runs first
       horizon  = c("2010Q1", "2010Q2"),
       coefficients = "reestimated"
     ),
-    "not supported"
+    "requires `estimation_end`"
   )
+})
+
+test_that("load_martin() rewrite_tsrange_end preserves per-equation start dates", {
+  lines <- c(
+    "BEHAVIORAL> PTM",
+    "TSRANGE 1993 1 2019 3",
+    "EQ> ...",
+    "BEHAVIORAL> PAE",
+    "TSRANGE 1997 4 2019 3",
+    "EQ> ..."
+  )
+  out <- martin:::rewrite_tsrange_end(lines, "2025Q2")
+  expect_equal(out[2], "TSRANGE 1993 1 2025 2")
+  expect_equal(out[5], "TSRANGE 1997 4 2025 2")
+  # Non-TSRANGE lines untouched
+  expect_equal(out[1], lines[1])
+  expect_equal(out[3], lines[3])
+})
+
+test_that("rewrite_tsrange_end rejects malformed estimation_end", {
+  expect_error(martin:::rewrite_tsrange_end(c("TSRANGE 1993 1 2019 3"), "2025"),
+               "yyyyQq")
+  expect_error(martin:::rewrite_tsrange_end(c("TSRANGE 1993 1 2019 3"), "2025Q5"),
+               "yyyyQq")
 })
 
 test_that("solve_martin() rejects malformed horizon", {

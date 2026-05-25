@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **440 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **455 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -502,6 +502,28 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **MARTIN re-estimation through 2025Q2** — `load_martin()` and
+  `solve_martin()` gain an `estimation_end` parameter that rewrites
+  every `TSRANGE` line in the model text to a user-specified end
+  quarter before bimets loads the model, preserving each equation's
+  start date. `solve_martin(coefficients = "reestimated",
+  estimation_end = "2025Q2")` re-fits all 95 behavioural equations
+  on data through 2025Q2 instead of the frozen 2019Q3 sample.
+  `_targets.R` now uses re-estimation by default. Effect on 2025Q4
+  projections: NCR goes from 0.9% (frozen, no ZLB) to 4.51% (close
+  to actual 4.35%); PTM from 121 to 149 (actual ~140); real GDP
+  from 707k to 590k (actual ~588k). LUR still high (~5.5% vs actual
+  4%) — re-estimation can't fully fix labour-market gap.
+- **Extend live data through 2025Q4** — `merge_with_fallback`
+  rewritten as quarter-by-quarter coalesce (old coverage-based rule
+  threw away live data whose start was later than fixture even when
+  live extended years past the fixture's end). PEX catalogue row
+  fixed to `level_from_pct`. NHFA_TREND dummy added. `_targets.R`
+  horizon extended to `c("2010Q1", "2025Q4")`; `extend_exogenous()`
+  wired into the `raw_database` target to carry forward exogenous
+  variables that end at the fixture's 2019Q3 cutoff. Live data now
+  spans: National Accounts to 2025Q4, prices to 2026Q1, monthly
+  indicators to 2026Q2.
 - **Monthly-indicator bridge equations** — adds
   `sibyldata::nowcast_monthly_indicators()` to surface raw monthly
   series alongside the quarterly database; adds
