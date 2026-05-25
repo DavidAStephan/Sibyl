@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **400 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **432 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -482,6 +482,17 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Plausibility tests + end-to-end round walkthrough** — codifies
+  economic priors as testthat checks (`test-plausibility.R`,
+  32 cases against the fixture solve); ships a live-pipeline
+  equivalent (`scripts/live_plausibility_check.R`, 27 cases against
+  `tar_load(baseline)`); adds an end-to-end forecast-round walkthrough
+  (`scripts/end_to_end_round_walkthrough.R`) that constructs manual
+  PTM add-factors, runs baseline vs adjusted solves, and verifies the
+  shock propagates as expected (PTM +0.1pp → NCR +0.1pp → NMR +0.1pp
+  → Y -0.02%, all textbook). The walkthrough activates the LLM step
+  when `ANTHROPIC_API_KEY` is set; otherwise prints exactly what
+  command to run.
 - **RSTAR fixed-prior structural params + PI_E/TLUR fidelity +
   nowcast bridge** — `fit_rstar_kfas_full` now ships with baked-in
   structural params (RSTAR_FULL_PARAMS) that keep live estimates
