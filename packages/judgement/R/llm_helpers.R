@@ -253,6 +253,14 @@ parse_proposal_to_adjustment <- function(p,
 }
 
 # Build a diff-from-baseline summary for describe_projection().
+#
+# For variables that are intrinsically rates (LUR, NCR, LPR, ...) the diff
+# is in pp directly and percent-of-baseline would be a percent change of a
+# percent, which is confusing -- the LLM has been observed to misread that
+# as pp. So we emit pp for rate variables and (units + percent) for level
+# variables.
+.percent_rate_vars <- c("LUR", "TLUR", "NCR", "RBR", "LPR", "NMR", "PI_E")
+
 projection_diff_text <- function(projection,
                                   baseline,
                                   variables = c("Y", "RC", "GNE", "LUR",
@@ -273,11 +281,16 @@ projection_diff_text <- function(projection,
   lines <- vapply(split(joined, joined$variable), function(r) {
     r <- r[order(r$quarter), ]
     if (nrow(r) > 8L) r <- r[seq.int(nrow(r) - 7L, nrow(r)), ]
-    paste0(
-      r$variable[1], ": ",
-      paste(sprintf("%s diff=%+.2f (%.1f%%)", r$quarter, r$diff_abs, r$diff_pct),
-            collapse = ", ")
-    )
+    v <- r$variable[1]
+    is_rate <- v %in% .percent_rate_vars
+    cells <- if (is_rate) {
+      sprintf("%s diff=%+.2f pp (baseline=%.2f pp)",
+              r$quarter, r$diff_abs, r$baseline_value)
+    } else {
+      sprintf("%s diff=%+.2f (%+.1f%%)",
+              r$quarter, r$diff_abs, r$diff_pct)
+    }
+    paste0(v, ": ", paste(cells, collapse = ", "))
   }, character(1))
   paste(lines, collapse = "\n")
 }

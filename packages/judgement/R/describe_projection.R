@@ -5,6 +5,13 @@
 #' from the original narrative, the translation has failed somewhere — and
 #' [compare_narrative_to_description()] surfaces that.
 #'
+#' The describer is **deliberately blind to the input narrative.** It sees
+#' only the numerical diff from baseline. If we fed it the narrative it
+#' would naturally mirror that framing, which makes the round-trip audit
+#' trivially satisfied even when the projection's numbers actually
+#' contradict the narrative. The `narrative` argument is retained but
+#' ignored (kept for API back-compat, with a one-time deprecation warning).
+#'
 #' Free-form prose (not structured), since the description is meant to be
 #' human-readable. Includes a compact diff-from-baseline summary in the
 #' user message so the LLM is grounded in the numbers.
@@ -12,9 +19,8 @@
 #' @param projection A projection tibble from [martin::solve_martin()].
 #' @param baseline   The baseline projection (also from
 #'   [martin::solve_martin()]) the new one is being compared to.
-#' @param narrative  The narrative that produced the adjustments. Optional
-#'   but recommended; including it lets the LLM mirror the narrative's
-#'   framing.
+#' @param narrative  Deprecated and ignored — the describer is blind by
+#'   design. See the description above.
 #' @param focus A character vector of variables to emphasise. Defaults to
 #'   the SMP-style headline aggregates.
 #' @param model Character. The `ellmer` model identifier.
@@ -30,6 +36,11 @@ describe_projection <- function(projection,
                                 model = "claude-opus-4-7",
                                 chat  = NULL) {
   stopifnot(is.data.frame(projection), is.data.frame(baseline))
+  if (!is.null(narrative)) {
+    warning("`narrative` is deprecated and ignored: the describer is blind ",
+            "by design so the round-trip audit can be meaningful.",
+            call. = FALSE)
+  }
 
   diff_text <- projection_diff_text(projection, baseline, variables = focus)
 
@@ -38,18 +49,10 @@ describe_projection <- function(projection,
     "",
     diff_text,
     "",
-    if (!is.null(narrative)) {
-      "The narrative that produced this projection:"
-    } else {
-      NULL
-    },
-    if (!is.null(narrative)) narrative else NULL,
-    if (!is.null(narrative)) "" else NULL,
     "Draft a short, plain-English paragraph (3-6 sentences) describing how",
-    "this projection differs from baseline. Mirror the framing of the",
-    "narrative when reasonable; lead with the headline numbers; be specific",
-    "about quarters and magnitudes; do not introduce claims not supported by",
-    "the numbers shown.",
+    "this projection differs from baseline. Lead with the headline numbers;",
+    "be specific about quarters and magnitudes; never report a number that",
+    "isn't in the diff summary above.",
     sep = "\n"
   )
 
@@ -57,7 +60,9 @@ describe_projection <- function(projection,
     "You are SIBYL's projection describer. Given a difference summary,",
     "draft a short readable paragraph that a forecaster could paste into a",
     "round report. Never invent numbers; always reference the diff summary",
-    "you were given.",
+    "you were given. You do NOT have access to the narrative that produced",
+    "the projection - describe what the numbers say, not what you think the",
+    "forecaster intended.",
     sep = " "
   )
   chat <- get_chat(chat, system_prompt = sysprompt, model = model)

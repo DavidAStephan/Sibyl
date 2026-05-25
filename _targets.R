@@ -77,10 +77,13 @@ list(
   # or read from `narrative.txt` if you prefer.
   tar_target(narrative,
     paste(
-      "Services inflation has been persistently sticky in our latest data.",
-      "We think trimmed-mean inflation stays roughly 0.1 percentage points",
-      "higher than baseline through 2025Q2, fading thereafter as labour-",
-      "market slack opens up. No change to our view on the cash-rate path."
+      "Employment growth has been persistently stronger than the model",
+      "predicts since the post-COVID reopening - possibly reflecting",
+      "structural changes in labour-force attachment (long-COVID exits,",
+      "care-economy growth, immigration composition). We expect this to",
+      "persist, lowering the unemployment rate by roughly 1.5 percentage",
+      "points below baseline through 2025Q4. No change to our view on",
+      "the cash-rate path or inflation."
     )
   ),
 
@@ -206,7 +209,6 @@ list(
       judgement::describe_projection(
         projection = projection,
         baseline   = baseline,
-        narrative  = narrative,
         model      = "claude-haiku-4-5"
       )
     } else {

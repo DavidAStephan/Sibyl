@@ -78,17 +78,32 @@ test_that("parse_proposal_to_adjustment() round-trips a valid proposal", {
   expect_equal(a$source, "llm")
 })
 
-test_that("parse_proposal_to_adjustment() errors on length mismatch", {
+test_that("parse_proposal_to_adjustment() warns on length mismatch and pads", {
   p <- list(
     equation = "PTM",
     horizon_start = "2026Q1", horizon_end = "2026Q3",
     values = c(0.10, 0.05),  # length 2, horizon length 3
     rationale = "test", confidence = "medium", tail = "zero"
   )
-  expect_error(
-    judgement:::parse_proposal_to_adjustment(p),
-    "values has length 2"
+  expect_warning(
+    a <- judgement:::parse_proposal_to_adjustment(p),
+    "2 values for 3-quarter horizon"
   )
+  expect_equal(a$value, c(0.10, 0.05, 0.05))  # padded with last
+})
+
+test_that("parse_proposal_to_adjustment() warns on length mismatch and truncates", {
+  p <- list(
+    equation = "PTM",
+    horizon_start = "2026Q1", horizon_end = "2026Q3",
+    values = c(0.10, 0.05, 0.03, 0.02),  # length 4, horizon length 3
+    rationale = "test", confidence = "medium", tail = "zero"
+  )
+  expect_warning(
+    a <- judgement:::parse_proposal_to_adjustment(p),
+    "4 values for 3-quarter horizon"
+  )
+  expect_equal(a$value, c(0.10, 0.05, 0.03))  # truncated
 })
 
 test_that("parse_proposal_to_adjustment() errors on missing fields", {

@@ -28,10 +28,22 @@ test_that("describe_projection() returns the LLM's free-form prose", {
   out <- describe_projection(
     projection = projection_fixture("scenario", y_offset = 1),
     baseline   = projection_fixture("baseline"),
-    narrative  = "We think growth is firmer than baseline.",
     chat       = chat
   )
   expect_identical(out, prose)
+})
+
+test_that("describe_projection() warns when a narrative is supplied", {
+  chat <- fake_chat_str(free = "ok")
+  expect_warning(
+    describe_projection(
+      projection = projection_fixture("scenario"),
+      baseline   = projection_fixture("baseline"),
+      narrative  = "anything",
+      chat       = chat
+    ),
+    "deprecated"
+  )
 })
 
 test_that("describe_projection() works without a narrative", {
@@ -89,7 +101,6 @@ test_that("describe_projection() round-trips with live Anthropic Claude", {
   out <- describe_projection(
     projection = projection_fixture("scenario", y_offset = 2),
     baseline   = projection_fixture("baseline"),
-    narrative  = "Firmer growth than baseline through 2026.",
     model      = "claude-haiku-4-5"
   )
   expect_type(out, "character")
