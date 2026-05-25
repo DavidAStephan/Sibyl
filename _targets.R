@@ -79,7 +79,7 @@ list(
     paste(
       "Services inflation has been persistently sticky in our latest data.",
       "We think trimmed-mean inflation stays roughly 0.1 percentage points",
-      "higher than baseline through 2018Q3, fading thereafter as labour-",
+      "higher than baseline through 2025Q2, fading thereafter as labour-",
       "market slack opens up. No change to our view on the cash-rate path."
     )
   ),
