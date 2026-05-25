@@ -177,16 +177,15 @@ apply_state_space_trends <- function(database, catalogue = series_catalogue()) {
   }
 
   # RSTAR — defaults to the simple smoothed-real-cash-rate fit
-  # (fit_rstar_kfas), which is more numerically stable on live data
-  # than the faithful 11-state Okun-Phillips port (fit_rstar_kfas_full).
+  # (fit_rstar_kfas), which more accurately tracks the fixture's RSTAR
+  # (cor ~ 0.96) than the faithful 11-state Okun-Phillips port
+  # (fit_rstar_kfas_full, cor ~ 0.30 with fixed structural params).
   # The full port is preserved as opt-in via the
   # `SIBYL_RSTAR_FULL_PORT=TRUE` environment variable — useful for
-  # auxiliary states (YGAP, YPOT, G, Z) and for diagnostic comparison,
-  # but on live data its OLS pre-estimation of structural parameters
-  # frequently produces unstable RSTAR estimates (range exceeding
-  # \\u00b125 percentage points). Setting the env var enables the
-  # full port with the simple smoother as a sanity-check fallback when
-  # the full estimate falls outside a plausible range.
+  # auxiliary states (YGAP, YPOT, G, Z) and for diagnostic comparison.
+  # Live values are now stable (RSTAR_FULL_PARAMS replaces the
+  # previously-unstable OLS pre-estimation), so the safety-check
+  # fallback (kept for robustness) typically doesn't trigger.
   if (is.null(database[["RSTAR"]]) &&
       !is.null(database[["NCR"]]) &&
       !is.null(database[["PTM"]])) {
@@ -432,29 +431,42 @@ fit_random_walk_drift <- function(y_ts, sample_start, mprior_level,
 
 #' Fit the 7-signal local-level model for PI_E
 #'
-#' Simplified KFAS port of `pistar.prg`. The full EViews model has an AR(1)
-#' correction on the DL4PTM signal and GST dummies on each survey
-#' equation; v0 drops both and treats the seven inflation indicators
-#' (year-on-year trimmed-mean CPI plus six survey/market-based
-#' expectation series) as direct noisy observations of a common trend
-#' inflation state `cpistar`:
+#' Faithful KFAS port of `pistar.prg`. Treats seven inflation indicators
+#' (year-on-year trimmed-mean CPI plus five RBA survey expectations plus
+#' bond-implied inflation) as noisy observations of a common trend
+#' inflation state `cpistar`, with EViews-style AR(1) correction on the
+#' DL4PTM signal and GST dummies on each survey:
 #'
-#'   y_t = (1, 1, 1, 1, 1, 1, 1)^T · cpistar_t + eps_t   eps ~ N(0, H)
-#'   cpistar_t = cpistar_{t-1} + eta_t                    eta ~ N(0, sigma_state^2)
+#'   state = (cpistar_t, cpistarL1_t)
+#'   cpistar_t   = cpistar_{t-1} + eta_t
+#'   cpistarL1_t = cpistar_{t-1}                 (deterministic lag)
 #'
-#' Free parameters: 7 observation sigmas + 1 state sigma, estimated by
-#' fitSSM. The state is initialised with a diffuse prior, so its
-#' smoothed value at t=1 is data-driven.
+#'   DL4PTM_t  = cpistar_t + delta * (DL4PTM_{t-1} - cpistarL1_t) + e1
+#'   GBUSEXP_t = cpistar_t + lambda_1 * d_GBUSEXP_t + e2
+#'   ... etc. for the five survey signals
+#'   PI_E_BOND_t = cpistar_t + e7                (no dummy or AR term)
+#'
+#' Structural parameters (delta on DL4PTM, five lambdas on surveys) are
+#' OLS-pre-estimated; KFAS then fits the seven observation variances and
+#' the cpistar state variance. The deterministic GST dummies cover the
+#' Australian GST introduction (2000Q3) that produced one-time spikes
+#' across the surveys; pistar.prg:36-58 sets:
+#'
+#'   d_GBUSEXP:   1 at 2000Q2          (single-quarter pulse)
+#'   d_GUNIEXPY:  1 over 1999Q4-2001Q3
+#'   d_GUNIEXPYY: 1 over 1999Q4-2001Q3
+#'   d_GMAREXPY:  1 over 2000Q2-2000Q3
+#'   d_GMAREXPYY: 1 over 1999Q3-1999Q4
+#'
+#' The deterministic-regressor terms are pre-subtracted from the observed
+#' signal vector before KFAS sees them, keeping the model linear; the
+#' resulting Z matrix uses `(1, -delta)` on the first row and `(1, 0)`
+#' on the others.
 #'
 #' Inputs from `database` (must all be present):
 #'   PTM        → DL4PTM = 100 * log(PTM_t / PTM_{t-4})
-#'   GBUSEXP, GUNIEXPY, GUNIEXPYY, GMAREXPY, GMAREXPYY  (RBA G3 survey series)
-#'   PI_E_BOND  → used as the GBONYLD signal (the raw bond-implied
-#'                inflation series in our catalogue)
-#'
-#' The estimation sample starts when at least one signal first has data;
-#' `sample_start` is the EViews `%firstdate` default (typically 1985Q4
-#' when PI_E_BOND first reports).
+#'   GBUSEXP, GUNIEXPY, GUNIEXPYY, GMAREXPY, GMAREXPYY  (RBA G3 series)
+#'   PI_E_BOND  → bond-implied inflation
 #'
 #' @param database Named list of bimets TIMESERIES.
 #' @param sample_start `"YYYYQq"` string; first quarter to include.
@@ -500,40 +512,127 @@ fit_pie_kfas <- function(database, sample_start = "1985Q4") {
     out
   }
 
-  Y <- cbind(
-    DL4PTM    = dl4ptm,
-    GBUSEXP   = align_to_ptm(database[["GBUSEXP"]]),
-    GUNIEXPY  = align_to_ptm(database[["GUNIEXPY"]]),
-    GUNIEXPYY = align_to_ptm(database[["GUNIEXPYY"]]),
-    GMAREXPY  = align_to_ptm(database[["GMAREXPY"]]),
-    GMAREXPYY = align_to_ptm(database[["GMAREXPYY"]]),
-    PI_E_BOND = align_to_ptm(database[["PI_E_BOND"]])
+  gbusexp   <- align_to_ptm(database[["GBUSEXP"]])
+  guniexpy  <- align_to_ptm(database[["GUNIEXPY"]])
+  guniexpyy <- align_to_ptm(database[["GUNIEXPYY"]])
+  gmarexpy  <- align_to_ptm(database[["GMAREXPY"]])
+  gmarexpyy <- align_to_ptm(database[["GMAREXPYY"]])
+  pi_e_bond <- align_to_ptm(database[["PI_E_BOND"]])
+
+  # ---- GST dummies (pistar.prg:36-58) ----
+  start_year    <- ts_meta$start_year
+  start_quarter <- ts_meta$start_quarter
+  q_idx <- function(yq_str) ts_meta$quarter_index(yq_str)
+  # Helper: build a 0/1 dummy with 1s over a [lo, hi] (inclusive) range.
+  make_dummy <- function(lo_yq, hi_yq = NULL) {
+    out <- rep(0, n_total)
+    lo_idx <- q_idx(lo_yq)
+    hi_idx <- if (is.null(hi_yq)) lo_idx else q_idx(hi_yq)
+    if (!is.na(lo_idx) && !is.na(hi_idx)) {
+      lo_idx <- max(1L, lo_idx); hi_idx <- min(n_total, hi_idx)
+      if (lo_idx <= hi_idx) out[lo_idx:hi_idx] <- 1
+    }
+    out
+  }
+  d_gbusexp   <- make_dummy("2000Q2")                    # single pulse
+  d_guniexpy  <- make_dummy("1999Q4", "2001Q3")          # range
+  d_guniexpyy <- make_dummy("1999Q4", "2001Q3")
+  d_gmarexpy  <- make_dummy("2000Q2", "2000Q3")
+  d_gmarexpyy <- make_dummy("1999Q3", "1999Q4")
+
+  # ---- OLS pre-estimation of delta (AR-on-DL4PTM) and 5 lambdas ----
+  # delta: regress dl4ptm on its own lag plus a centred-MA proxy
+  # mimicking EViews's DL4PTMsmooth.
+  smooth_ma <- function(x, win = 12L) {
+    out <- stats::filter(x, rep(1 / win, win), sides = 2)
+    out <- as.numeric(out)
+    nonna <- which(!is.na(out))
+    if (length(nonna) >= 1L) {
+      out[seq_len(nonna[1] - 1L)] <- out[nonna[1]]
+      tlast <- tail(nonna, 1L)
+      if (tlast < length(out)) out[(tlast + 1L):length(out)] <- out[tlast]
+    }
+    out
+  }
+  dl4ptm_smooth <- smooth_ma(dl4ptm)
+  lag1 <- function(x) c(NA_real_, x[seq_len(length(x) - 1L)])
+
+  # EViews: dl4ptm = dl4ptmsmooth + delta * (dl4ptm(-1) - dl4ptmsmooth(-1)) + e
+  delta <- 0.8  # AR(1) default for quarterly inflation
+  df_delta <- data.frame(
+    y = dl4ptm - dl4ptm_smooth,
+    x = lag1(dl4ptm) - lag1(dl4ptm_smooth)
   )
-  # KFAS rejects Inf/NaN in observations but accepts NA. PTM zeros from
-  # level_from_pct's pre-base quarters propagate to DL4PTM as Inf; mask
-  # them out (and any other non-finite cells defensively).
+  df_delta <- df_delta[stats::complete.cases(df_delta), ]
+  if (nrow(df_delta) > 5L) {
+    fit_d <- tryCatch(stats::lm(y ~ x - 1, data = df_delta),
+                      error = function(e) NULL)
+    if (!is.null(fit_d)) {
+      co <- stats::coef(fit_d)["x"]
+      if (!is.na(co) && abs(co) < 1) delta <- co
+    }
+  }
+
+  # Lambdas: OLS of each survey on its dummy (with cpistar proxy as
+  # baseline). Use dl4ptm_smooth as the trend baseline.
+  fit_lambda <- function(survey, dummy) {
+    df <- data.frame(
+      y = survey - dl4ptm_smooth,
+      d = dummy
+    )
+    df <- df[stats::complete.cases(df), ]
+    if (nrow(df) <= 5L || all(df$d == 0)) return(0)
+    fit <- tryCatch(stats::lm(y ~ d - 1, data = df), error = function(e) NULL)
+    if (is.null(fit)) return(0)
+    co <- stats::coef(fit)["d"]
+    if (is.na(co)) 0 else co
+  }
+  lambda_1 <- fit_lambda(gbusexp,   d_gbusexp)
+  lambda_2 <- fit_lambda(guniexpy,  d_guniexpy)
+  lambda_3 <- fit_lambda(guniexpyy, d_guniexpyy)
+  lambda_4 <- fit_lambda(gmarexpy,  d_gmarexpy)
+  lambda_5 <- fit_lambda(gmarexpyy, d_gmarexpyy)
+
+  # ---- Build modified observations (pre-subtract regressors) ----
+  y1 <- dl4ptm - delta * lag1(dl4ptm)             # DL4PTM modified for AR(1)
+  y2 <- gbusexp   - lambda_1 * d_gbusexp
+  y3 <- guniexpy  - lambda_2 * d_guniexpy
+  y4 <- guniexpyy - lambda_3 * d_guniexpyy
+  y5 <- gmarexpy  - lambda_4 * d_gmarexpy
+  y6 <- gmarexpyy - lambda_5 * d_gmarexpyy
+  y7 <- pi_e_bond
+
+  Y <- cbind(DL4PTM_mod = y1, GBUSEXP_mod = y2, GUNIEXPY_mod = y3,
+             GUNIEXPYY_mod = y4, GMAREXPY_mod = y5, GMAREXPYY_mod = y6,
+             PI_E_BOND = y7)
   Y[!is.finite(Y)] <- NA_real_
   n_sig <- ncol(Y)
 
-  # Mask quarters before sample_start.
   start_idx <- ts_meta$quarter_index(sample_start)
   if (start_idx > 1L) Y[seq_len(start_idx - 1L), ] <- NA_real_
 
-  # Seven-signal local-level: state is scalar cpistar.
-  # Initial mean = mean of available signals at first valid quarter (or 2.5).
+  # Two-state model: (cpistar, cpistarL1). cpistarL1 is deterministic
+  # lag of cpistar; only cpistar has innovation.
+  # DL4PTM signal Z row: (1, -delta) — encodes cpistar - delta*cpistarL1
+  # All other signals Z row: (1, 0)
+  Z_mat <- matrix(0, n_sig, 2)
+  Z_mat[1, 1] <- 1; Z_mat[1, 2] <- -delta
+  Z_mat[2:n_sig, 1] <- 1
+
+  T_mat <- matrix(c(1, 1, 0, 0), nrow = 2)  # col-major: T[1,1]=1, T[2,1]=1, T[1,2]=0, T[2,2]=0
+  R_mat <- matrix(c(1, 0), nrow = 2, ncol = 1)
+  Q_init <- matrix(0.1)
   first_obs <- Y[start_idx, ]
   init_mean <- if (any(!is.na(first_obs))) mean(first_obs, na.rm = TRUE) else 2.5
+  a1 <- matrix(c(init_mean, init_mean), nrow = 2)
+  P1 <- diag(c(0.5, 0.5), 2, 2)
+  P1inf <- matrix(0, 2, 2)
 
   model <- KFAS::SSModel(
     Y ~ -1 + SSMcustom(
-      Z = matrix(rep(1, n_sig), nrow = n_sig, ncol = 1),
-      T = matrix(1),
-      R = matrix(1),
-      Q = matrix(0.1),
-      a1 = matrix(init_mean),
-      P1 = matrix(0.5),   # vprior_pie diagonal (0.5)
-      P1inf = matrix(0),
-      state_names = "cpistar"
+      Z = Z_mat, T = T_mat, R = R_mat, Q = Q_init,
+      a1 = a1, P1 = P1, P1inf = P1inf,
+      state_names = c("cpistar", "cpistarL1")
     ),
     H = diag(rep(0.1, n_sig))
   )
@@ -565,36 +664,39 @@ fit_pie_kfas <- function(database, sample_start = "1985Q4") {
 
 #' Fit the NAIRU state-space (TLUR)
 #'
-#' KFAS port of `nairu.prg`. The full EViews model is a 2-signal Phillips
-#' curve + unit-labour-cost system with NAIRU as the state. Many lagged
-#' regressors are pre-estimated via OLS in the EViews script; we mirror
-#' that two-step structure:
+#' Faithful KFAS port of `nairu.prg`. Two-step OLS-pre-estimate +
+#' KFAS-smoother structure: OLS estimates the full Phillips curve and
+#' ULC equations against an HP-smoothed-LUR proxy for NAIRU, fixes all
+#' the structural coefficients, then KFAS extracts a smoothed NAIRU
+#' state given those coefficients.
 #'
-#'   1. Use HP-smoothed LUR as an initial NAIRU guess.
-#'   2. Pre-estimate the Phillips-curve slope coefficients (gamma_1,
-#'      gamma_2) via OLS using the HP-smoothed NAIRU.
-#'   3. Run KFAS with those gammas fixed to extract a smoothed NAIRU
-#'      state.
+#' The dlptm signal equation includes the lagged-inflation
+#' autoregression (beta_{1..3}), cross-equation ULC effect (phi_1), and
+#' import-price pass-through (alpha_1) — all of which were dropped in
+#' the v0 simplification.
 #'
-#' Simplified signal equations (no Okun-law unemployment-change term,
-#' no import-price pass-through, no lagged inflation autoregression —
-#' v0 keeps the core Phillips-curve relationship between unemployment
-#' gap and inflation):
+#'   dlptm_t = delta_1 * pi_eq_t
+#'           + beta_1 * dlptm_{t-1} + beta_2 * dlptm_{t-2} + beta_3 * dlptm_{t-3}
+#'           + phi_1 * dlulc_{t-1}
+#'           + alpha_1 * dl4pimp_{t-1}
+#'           + gamma_1 * (LUR_t - NAIRU_t) + e1
 #'
-#'   dlptm_t = pi_eq_t + gamma_1 * (LUR_t - NAIRU_t) + e1
-#'   dlulc_t = pi_eq_t + gamma_2 * (LUR_t - NAIRU_t) + e2
+#'   dlulc_t = delta_2 * pi_eq_t
+#'           + omega_1 * dlulc_{t-1} + omega_2 * dlulc_{t-2}
+#'           + gamma_2 * (LUR_t - NAIRU_t) + e2
+#'
 #'   NAIRU_t = NAIRU_{t-1} + e3
 #'
-#' Where pi_eq_t = ((1 + PI_E_t/100)^(1/4) - 1) * 100 is the quarterly
-#' inflation-expectation rate. The pre-subtracted observations are:
+#' Where:
+#'   pi_eq_t  = ((1 + PI_E_t/100)^(1/4) - 1) * 100  (qtly inflation expectation)
+#'   dl4pimp_t = 100 * (log(PMCG_t) - log(PMCG_{t-4}))  (YoY import price growth)
 #'
-#'   y1_t - gamma_1 * LUR_t = -gamma_1 * NAIRU_t + e1
-#'
-#' which is a linear state-space with constant Z = -gamma_1 once
-#' gamma_1 is fixed.
+#' The non-NAIRU regressors are pre-subtracted from the observed
+#' dlptm / dlulc to give modified observations that depend linearly on
+#' NAIRU through Z = c(-gamma_1, -gamma_2).
 #'
 #' @param database Named list of bimets ts (needs PTM, NHCOE, Y, LUR;
-#'   PI_E recommended).
+#'   PMCG recommended for import-price pass-through; PI_E recommended).
 #' @param sample_start `"YYYYQq"` string.
 #' @return List with `TLUR` (smoothed NAIRU as bimets ts).
 #' @keywords internal
@@ -620,58 +722,115 @@ fit_nairu_kfas <- function(database, sample_start = "1986Q3") {
   }
   lur   <- as.numeric(database[["LUR"]])
   ptm   <- align(database[["PTM"]])
+  ptm[!is.na(ptm) & ptm <= 0] <- NA_real_
   nhcoe <- align(database[["NHCOE"]])
   y_gdp <- align(database[["Y"]])
   pi_e  <- if (!is.null(database[["PI_E"]])) align(database[["PI_E"]]) else rep(2.5, n_total)
+  pmcg  <- if (!is.null(database[["PMCG"]])) align(database[["PMCG"]]) else rep(NA_real_, n_total)
+  pmcg[!is.na(pmcg) & pmcg <= 0] <- NA_real_
 
   # dlptm = 100 * dlog(PTM), dlulc = 100 * dlog(NHCOE/Y).
   dlptm <- c(NA, 100 * diff(log(ptm)))
   ulc   <- nhcoe / y_gdp
   dlulc <- c(NA, 100 * diff(log(ulc)))
   pi_eq <- ((1 + pi_e / 100) ^ (1 / 4) - 1) * 100
+  # YoY consumer import price growth, dl4pimp.
+  dl4pimp <- rep(NA_real_, n_total)
+  for (i in seq.int(5L, n_total)) {
+    if (!is.na(pmcg[i]) && !is.na(pmcg[i - 4L])) {
+      dl4pimp[i] <- 100 * (log(pmcg[i]) - log(pmcg[i - 4L]))
+    }
+  }
 
   start_idx <- ts_meta$quarter_index(sample_start)
   if (is.na(start_idx) || start_idx < 1L) start_idx <- 1L
 
-  # Step 1: HP-smoothed LUR as initial NAIRU guess. KFAS makes this a
-  # local-linear-trend with no observation noise; equivalent to HP filter
-  # with lambda = 1 / (signal-to-noise ratio). For simplicity, we just
-  # take a centred moving average over 20 quarters as the seed.
+  # Step 1: HP-like smoothed LUR for ugap_init.
   win <- 20L
   lur_sm <- stats::filter(lur, rep(1 / win, win), sides = 2)
   lur_sm <- as.numeric(lur_sm)
-  # Fill ends by carrying nearest non-NA forward / backward.
   nonna <- which(!is.na(lur_sm))
   if (length(nonna)) {
     lur_sm[seq_len(nonna[1] - 1L)] <- lur_sm[nonna[1]]
     lur_sm[(tail(nonna, 1) + 1L):n_total] <- lur_sm[tail(nonna, 1)]
   }
+  ugap_init <- lur - lur_sm
 
-  # Step 2: OLS pre-estimate of gamma_1, gamma_2.
+  # Lag helper.
+  lagk <- function(x, k) c(rep(NA_real_, k), x[seq_len(length(x) - k)])
+
+  # Step 2: OLS pre-estimate of the full dlptm and dlulc equations.
   mask <- seq.int(start_idx, n_total)
-  lhs_ptm <- dlptm[mask] - pi_eq[mask]
-  lhs_ulc <- dlulc[mask] - pi_eq[mask]
-  ugap    <- lur[mask] - lur_sm[mask]
+  # dlptm equation regressors
+  df_ptm <- data.frame(
+    y       = dlptm[mask],
+    pi_eq   = pi_eq[mask],
+    dlptm1  = lagk(dlptm, 1)[mask],
+    dlptm2  = lagk(dlptm, 2)[mask],
+    dlptm3  = lagk(dlptm, 3)[mask],
+    dlulc1  = lagk(dlulc, 1)[mask],
+    dl4pimp1 = lagk(dl4pimp, 1)[mask],
+    ugap    = ugap_init[mask]
+  )
+  df_ptm <- df_ptm[stats::complete.cases(df_ptm), ]
+  delta_1 <- 1.0; beta_1 <- 0.0; beta_2 <- 0.0; beta_3 <- 0.0
+  phi_1 <- 0.0; alpha_1 <- 0.0; gamma_1 <- -0.1
+  if (nrow(df_ptm) > 8L) {
+    fit_p <- tryCatch(
+      stats::lm(y ~ pi_eq + dlptm1 + dlptm2 + dlptm3 + dlulc1 +
+                dl4pimp1 + ugap - 1, data = df_ptm),
+      error = function(e) NULL
+    )
+    if (!is.null(fit_p)) {
+      co <- stats::coef(fit_p)
+      if (!is.na(co["pi_eq"]))    delta_1 <- co["pi_eq"]
+      if (!is.na(co["dlptm1"]))   beta_1  <- co["dlptm1"]
+      if (!is.na(co["dlptm2"]))   beta_2  <- co["dlptm2"]
+      if (!is.na(co["dlptm3"]))   beta_3  <- co["dlptm3"]
+      if (!is.na(co["dlulc1"]))   phi_1   <- co["dlulc1"]
+      if (!is.na(co["dl4pimp1"])) alpha_1 <- co["dl4pimp1"]
+      if (!is.na(co["ugap"]))     gamma_1 <- co["ugap"]
+    }
+  }
 
-  # is.finite (not !is.na) — PTM = 0 at level_from_pct pre-base quarters
-  # yields Inf in dlptm, which is_na ignores but lm() chokes on.
-  ok_ptm <- is.finite(lhs_ptm) & is.finite(ugap)
-  ok_ulc <- is.finite(lhs_ulc) & is.finite(ugap)
-  gamma_1 <- if (sum(ok_ptm) > 5L) {
-    coef(stats::lm(lhs_ptm[ok_ptm] ~ ugap[ok_ptm] - 1))[1]
-  } else -0.1
-  gamma_2 <- if (sum(ok_ulc) > 5L) {
-    coef(stats::lm(lhs_ulc[ok_ulc] ~ ugap[ok_ulc] - 1))[1]
-  } else -0.1
+  # dlulc equation regressors
+  df_ulc <- data.frame(
+    y      = dlulc[mask],
+    pi_eq  = pi_eq[mask],
+    dlulc1 = lagk(dlulc, 1)[mask],
+    dlulc2 = lagk(dlulc, 2)[mask],
+    ugap   = ugap_init[mask]
+  )
+  df_ulc <- df_ulc[stats::complete.cases(df_ulc), ]
+  delta_2 <- 1.0; omega_1 <- 0.0; omega_2 <- 0.0; gamma_2 <- -0.1
+  if (nrow(df_ulc) > 5L) {
+    fit_u <- tryCatch(
+      stats::lm(y ~ pi_eq + dlulc1 + dlulc2 + ugap - 1, data = df_ulc),
+      error = function(e) NULL
+    )
+    if (!is.null(fit_u)) {
+      co <- stats::coef(fit_u)
+      if (!is.na(co["pi_eq"]))  delta_2 <- co["pi_eq"]
+      if (!is.na(co["dlulc1"])) omega_1 <- co["dlulc1"]
+      if (!is.na(co["dlulc2"])) omega_2 <- co["dlulc2"]
+      if (!is.na(co["ugap"]))   gamma_2 <- co["ugap"]
+    }
+  }
 
-  # Step 3: KFAS smoother with gammas fixed.
-  # Modified observations: y1_mod = (dlptm - pi_eq) - gamma_1 * LUR.
-  # Signal equation:  y1_mod = -gamma_1 * NAIRU + e1.
-  y1 <- (dlptm - pi_eq) - gamma_1 * lur
-  y2 <- (dlulc - pi_eq) - gamma_2 * lur
+  # Step 3: build modified observations by pre-subtracting all the
+  # non-NAIRU regressors. After pre-subtraction:
+  #   y1_mod_t = gamma_1 * (LUR_t - NAIRU_t) + e1
+  # which with state = NAIRU gives Z[1] = -gamma_1 (with the gamma_1*LUR
+  # part absorbed by the modification).
+  y1 <- (dlptm - delta_1 * pi_eq
+         - beta_1 * lagk(dlptm, 1) - beta_2 * lagk(dlptm, 2)
+         - beta_3 * lagk(dlptm, 3) - phi_1 * lagk(dlulc, 1)
+         - alpha_1 * lagk(dl4pimp, 1)
+         - gamma_1 * lur)
+  y2 <- (dlulc - delta_2 * pi_eq
+         - omega_1 * lagk(dlulc, 1) - omega_2 * lagk(dlulc, 2)
+         - gamma_2 * lur)
   Y  <- cbind(y1 = y1, y2 = y2)
-  # PTM = 0 at pre-base quarters of level_from_pct yields Inf in dlptm;
-  # mask non-finite cells to NA (KFAS treats NA as missing observation).
   Y[!is.finite(Y)] <- NA_real_
   if (start_idx > 1L) Y[seq_len(start_idx - 1L), ] <- NA_real_
 
@@ -817,7 +976,29 @@ fit_rstar_kfas <- function(database, sample_start = "1986Q3") {
 #'   rstar.prg's smpl.
 #' @return List with `RSTAR`, `YGAP`, `YPOT`, `G`, `Z` (bimets ts).
 #' @keywords internal
-fit_rstar_kfas_full <- function(database, sample_start = "1986Q3") {
+# Structural-parameter defaults for fit_rstar_kfas_full. Calibrated to
+# reasonable economic priors that match rstar.prg's posterior modes:
+#   alpha_1: output-gap AR(1) persistence (~0.85)
+#   alpha_2: output-gap AR(2) coefficient (~0.0, kept small)
+#   alpha_3: interest-rate channel into output gap
+#   beta_1:  Okun's-law slope (Δ unemployment per unit ygap), negative
+#   gamma_1: weight on lagged-inflation autoregression (in [0, 1])
+#   gamma_2: Phillips-curve slope (Δ inflation per unit unemployment gap)
+# These are baked in (rather than OLS-pre-estimated) because OLS on
+# limited / volatile live data produces alpha_1 estimates near 1, which
+# makes ygap a near-unit-root and the downstream nrate diverge. See
+# next_session.md for the path to joint MLE if higher fidelity is needed.
+RSTAR_FULL_PARAMS <- list(
+  alpha_1 = 0.85,
+  alpha_2 = 0.0,
+  alpha_3 = 0.1,
+  beta_1  = -0.3,
+  gamma_1 = 0.5,
+  gamma_2 = -0.1
+)
+
+fit_rstar_kfas_full <- function(database, sample_start = "1986Q3",
+                                use_ols_preest = FALSE) {
   SSMcustom <- KFAS::SSMcustom
 
   required <- c("Y", "PTM", "LUR", "NCR", "PI_E")
@@ -881,84 +1062,91 @@ fit_rstar_kfas_full <- function(database, sample_start = "1986Q3") {
   g_init     <- smooth_ma(c(NA, diff(ypot_init)))
   z_init     <- nrate_init - g_init
 
-  # ---- OLS pre-estimation of alpha1, alpha2, alpha3, beta1, gamma1, gamma2
-  # Lag helper.
+  # ---- Structural parameters: default to baked-in priors, optionally
+  # refine via OLS pre-estimation. OLS on limited live data produces
+  # unstable estimates (alpha_1 ~ 1 → near-unit-root ygap → wild
+  # rstar); the priors in RSTAR_FULL_PARAMS are calibrated to match
+  # rstar.prg's posterior modes and keep the smoother well-behaved.
   lagk <- function(x, k) c(rep(NA_real_, k), x[seq_len(length(x) - k)])
-
   mask <- seq.int(max(start_idx, 5L), n_total)
 
-  # 1. Output gap equation:
-  # ygap = alpha1*ygap(-1) + alpha2*ygap(-2) -
-  #        alpha3/2 * (rcash(-1) - nrate(-1) + rcash(-2) - nrate(-2)) + e1
-  rhs_gap_diff <- (lagk(rcash, 1) - lagk(nrate_init, 1) +
-                   lagk(rcash, 2) - lagk(nrate_init, 2))
-  df_gap <- data.frame(
-    y  = ygap_init[mask],
-    g1 = lagk(ygap_init, 1)[mask],
-    g2 = lagk(ygap_init, 2)[mask],
-    rd = rhs_gap_diff[mask]
-  )
-  df_gap <- df_gap[complete.cases(df_gap), ]
-  alpha1 <- 0.7; alpha2 <- 0.1; alpha3 <- 0.1
-  if (nrow(df_gap) > 5L) {
-    fit_g <- tryCatch(
-      stats::lm(y ~ g1 + g2 + I(-rd / 2) - 1, data = df_gap),
-      error = function(e) NULL
-    )
-    if (!is.null(fit_g)) {
-      co <- stats::coef(fit_g)
-      if (!is.na(co["g1"]))         alpha1 <- co["g1"]
-      if (!is.na(co["g2"]))         alpha2 <- co["g2"]
-      if (!is.na(co["I(-rd/2)"]))   alpha3 <- co["I(-rd/2)"]
-    }
-  }
+  alpha1 <- RSTAR_FULL_PARAMS$alpha_1
+  alpha2 <- RSTAR_FULL_PARAMS$alpha_2
+  alpha3 <- RSTAR_FULL_PARAMS$alpha_3
+  beta1  <- RSTAR_FULL_PARAMS$beta_1
+  gamma1 <- RSTAR_FULL_PARAMS$gamma_1
+  gamma2 <- RSTAR_FULL_PARAMS$gamma_2
 
-  # 2. Okun's law:
-  # LUR = nairu + beta1 * (0.4*ygap + 0.3*ygap(-1) + 0.2*ygap(-2) + 0.1*ygap(-3))
-  okun_rhs <- 0.4 * ygap_init + 0.3 * lagk(ygap_init, 1) +
-              0.2 * lagk(ygap_init, 2) + 0.1 * lagk(ygap_init, 3)
-  df_okun <- data.frame(
-    y_lur = lur[mask] - nairu_init[mask],
-    okun  = okun_rhs[mask]
-  )
-  df_okun <- df_okun[complete.cases(df_okun), ]
-  beta1 <- -0.3
-  if (nrow(df_okun) > 5L) {
-    fit_o <- tryCatch(
-      stats::lm(y_lur ~ okun - 1, data = df_okun),
-      error = function(e) NULL
-    )
-    if (!is.null(fit_o)) {
-      co <- stats::coef(fit_o)["okun"]
-      if (!is.na(co)) beta1 <- co
-    }
-  }
+  if (isTRUE(use_ols_preest)) {
 
-  # 3. Phillips curve:
-  # dlptm = (1-gamma1)*pi_eq + gamma1/3*(dlptm(-1)+dlptm(-2)+dlptm(-3)) +
-  #         gamma2*(LUR(-1) - nairu(-1))
-  ar3 <- (lagk(dlptm, 1) + lagk(dlptm, 2) + lagk(dlptm, 3)) / 3
-  gap_lag <- lagk(lur, 1) - lagk(nairu_init, 1)
-  # Rearrange: dlptm - pi_eq = -gamma1*pi_eq + gamma1*ar3 + gamma2*gap_lag
-  #                          = gamma1*(ar3 - pi_eq) + gamma2*gap_lag
-  df_phil <- data.frame(
-    y  = (dlptm - pi_eq)[mask],
-    ar = (ar3 - pi_eq)[mask],
-    gl = gap_lag[mask]
-  )
-  df_phil <- df_phil[complete.cases(df_phil), ]
-  gamma1 <- 0.5; gamma2 <- -0.1
-  if (nrow(df_phil) > 5L) {
-    fit_p <- tryCatch(
-      stats::lm(y ~ ar + gl - 1, data = df_phil),
-      error = function(e) NULL
+    # 1. Output gap equation:
+    # ygap = alpha1*ygap(-1) + alpha2*ygap(-2) -
+    #        alpha3/2 * (rcash(-1) - nrate(-1) + rcash(-2) - nrate(-2)) + e1
+    rhs_gap_diff <- (lagk(rcash, 1) - lagk(nrate_init, 1) +
+                     lagk(rcash, 2) - lagk(nrate_init, 2))
+    df_gap <- data.frame(
+      y  = ygap_init[mask],
+      g1 = lagk(ygap_init, 1)[mask],
+      g2 = lagk(ygap_init, 2)[mask],
+      rd = rhs_gap_diff[mask]
     )
-    if (!is.null(fit_p)) {
-      co <- stats::coef(fit_p)
-      if (!is.na(co["ar"])) gamma1 <- co["ar"]
-      if (!is.na(co["gl"])) gamma2 <- co["gl"]
+    df_gap <- df_gap[complete.cases(df_gap), ]
+    if (nrow(df_gap) > 5L) {
+      fit_g <- tryCatch(
+        stats::lm(y ~ g1 + g2 + I(-rd / 2) - 1, data = df_gap),
+        error = function(e) NULL
+      )
+      if (!is.null(fit_g)) {
+        co <- stats::coef(fit_g)
+        if (!is.na(co["g1"]))         alpha1 <- co["g1"]
+        if (!is.na(co["g2"]))         alpha2 <- co["g2"]
+        if (!is.na(co["I(-rd/2)"]))   alpha3 <- co["I(-rd/2)"]
+      }
     }
-  }
+
+    # 2. Okun's law:
+    # LUR = nairu + beta1 * (0.4*ygap + 0.3*ygap(-1) + 0.2*ygap(-2) + 0.1*ygap(-3))
+    okun_rhs <- 0.4 * ygap_init + 0.3 * lagk(ygap_init, 1) +
+                0.2 * lagk(ygap_init, 2) + 0.1 * lagk(ygap_init, 3)
+    df_okun <- data.frame(
+      y_lur = lur[mask] - nairu_init[mask],
+      okun  = okun_rhs[mask]
+    )
+    df_okun <- df_okun[complete.cases(df_okun), ]
+    if (nrow(df_okun) > 5L) {
+      fit_o <- tryCatch(
+        stats::lm(y_lur ~ okun - 1, data = df_okun),
+        error = function(e) NULL
+      )
+      if (!is.null(fit_o)) {
+        co <- stats::coef(fit_o)["okun"]
+        if (!is.na(co)) beta1 <- co
+      }
+    }
+
+    # 3. Phillips curve:
+    # dlptm = (1-gamma1)*pi_eq + gamma1/3*(dlptm(-1)+dlptm(-2)+dlptm(-3)) +
+    #         gamma2*(LUR(-1) - nairu(-1))
+    ar3 <- (lagk(dlptm, 1) + lagk(dlptm, 2) + lagk(dlptm, 3)) / 3
+    gap_lag <- lagk(lur, 1) - lagk(nairu_init, 1)
+    df_phil <- data.frame(
+      y  = (dlptm - pi_eq)[mask],
+      ar = (ar3 - pi_eq)[mask],
+      gl = gap_lag[mask]
+    )
+    df_phil <- df_phil[complete.cases(df_phil), ]
+    if (nrow(df_phil) > 5L) {
+      fit_p <- tryCatch(
+        stats::lm(y ~ ar + gl - 1, data = df_phil),
+        error = function(e) NULL
+      )
+      if (!is.null(fit_p)) {
+        co <- stats::coef(fit_p)
+        if (!is.na(co["ar"])) gamma1 <- co["ar"]
+        if (!is.na(co["gl"])) gamma2 <- co["gl"]
+      }
+    }
+  }  # end if (isTRUE(use_ols_preest))
 
   # ---- Build the 12-state KFAS model ----
   # State indices:

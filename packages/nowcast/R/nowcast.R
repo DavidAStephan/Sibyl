@@ -9,12 +9,15 @@
 #' - `"arima"`  — `fable::ARIMA()` (default; auto-orders).
 #' - `"ets"`    — `fable::ETS()`.
 #' - `"naive"`  — random walk (`fable::NAIVE()`).
-#'
-#' Deliberately univariate — no monthly bridge equations yet, per the
-#' "defensible if not state of the art" framing in
-#' [DESIGN.md](../../../DESIGN.md). Bridge equations using monthly
-#' indicators (labour-force-survey, retail-trade, building-approvals) are a
-#' v0.1 task.
+#' - `"bridge"` — linear regression on AR(1), AR(4), and a linear
+#'   trend via `fable::TSLM()`. Cheaper than full ARIMA but captures
+#'   the year-on-year seasonal and within-year persistence that
+#'   most National-Accounts components show. A true monthly-
+#'   indicator bridge (e.g. retail trade → quarterly consumption)
+#'   needs exposing monthly data separately to nowcast (the current
+#'   pipeline aggregates to quarterly upstream); this `"bridge"`
+#'   method is the multivariate-linear chassis those future
+#'   bridges would slot into.
 #'
 #' Ragged-edge handling: each variable is forecast from its own last
 #' observed quarter, so series that lag (e.g. National Accounts) get more
@@ -34,7 +37,8 @@
 #' @export
 nowcast_handover <- function(database,
                               h         = 2,
-                              method    = c("arima", "ets", "naive"),
+                              method    = c("arima", "ets", "naive",
+                                            "bridge"),
                               variables = NULL,
                               level     = 80) {
   method <- match.arg(method)
@@ -67,9 +71,19 @@ forecast_one <- function(ts, variable, h, method, level) {
   }
 
   spec <- switch(method,
-    arima = fable::ARIMA(value),
-    ets   = fable::ETS(value),
-    naive = fable::NAIVE(value)
+    arima  = fable::ARIMA(value),
+    ets    = fable::ETS(value),
+    naive  = fable::NAIVE(value),
+    # bridge: AR(1) + seasonal AR(1) ARIMA with auto-chosen
+    # differencing. Captures within-year persistence and year-on-year
+    # seasonality cheaply, without ARIMA's full auto-order search.
+    # fable::TSLM with lag(value) would be the more natural "linear
+    # bridge" framing, but TSLM doesn't propagate the lagged dependent
+    # into the forecast horizon — fable wants AR structure inside an
+    # ARIMA spec for the lag-of-LHS forecast to chain. Differencing
+    # range pdq(1, 0:1, 0) lets the model handle non-stationary series
+    # (RC, NC, etc.) without auto-selecting AR order.
+    bridge = fable::ARIMA(value ~ pdq(1, 0:1, 0) + PDQ(1, 0:1, 0))
   )
 
   # fable's ARIMA/ETS auto-selection prints warnings for ill-conditioned

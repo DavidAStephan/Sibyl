@@ -19,7 +19,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **395 pass, 0 fail, 15 skip** across the 4 packages |
+| Test suite | **400 pass, 0 fail, 15 skip** across the 4 packages |
 | Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
@@ -117,48 +117,70 @@ if Quarto isn't on PATH.
 Ranked by leverage. Each item is independent — pick whichever you
 have appetite for.
 
-### 1. RSTAR full-port stabilisation (~½ session)
+### 1. RSTAR full-port accuracy improvement (~½–1 session)
 
-`fit_rstar_kfas_full` lands as opt-in via
-`SIBYL_RSTAR_FULL_PORT=TRUE`, but its OLS pre-estimation of structural
-parameters (alpha_1..3, beta_1, gamma_1..2) destabilises on live data:
-alpha_1 estimates near 1 (unit root in ygap dynamics), producing
-RSTAR estimates outside [-25, 35] that the safety check catches and
-falls back to the simple smoother. To make the full port viable as
-the default, options are:
+`fit_rstar_kfas_full` is now **stable** on live data (fixed-prior
+structural params via `RSTAR_FULL_PARAMS` produce live values in the
+plausible [-0.004, 4.805] range), but the **accuracy** vs fixture is
+mediocre (cor ~ 0.30) — the smoothed nrate state doesn't track the
+fixture's RSTAR closely. The simple smoother
+(`fit_rstar_kfas`, cor ~ 0.96) remains the default.
 
-- Fix structural parameters at EViews's published estimates rather
-  than re-estimating per-vintage via OLS.
-- Use HP-filtered (not centred-MA) proxies for the ypot/nairu/nrate
-  initial-state guesses. KFAS's own SSMtrend(degree=2) with
-  appropriate `lambda` reproduces HP filter exactly.
-- Joint MLE of structural + variance params via custom `optim()`
-  likelihood (rather than two-step OLS + fitSSM).
+Paths to improve full-port accuracy:
 
-The simple smoother (`fit_rstar_kfas`) remains default and gives
-cor=0.96 against the fixture.
+- **Joint MLE**: write a custom `optim()` likelihood that estimates
+  structural + variance params jointly (currently the two-step
+  OLS-pre-est + fitSSM-on-variances structure leaves structural
+  params at OLS values that don't co-optimize with the smoother).
+- **Better initial states**: replace the centred-MA proxies with
+  actual HP filter (lambda=1600) — KFAS's `SSMtrend(degree=2)` with
+  the right Q reproduces HP exactly.
+- **Stronger Okun coefficient**: beta_1 = -0.3 may be too weak; try
+  beta_1 = -0.5 to disentangle ygap from NAIRU more sharply.
 
-### 2. PI_E / TLUR fidelity restoration (~½ session)
+Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
+auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
+expose.
 
-Both v0 ports dropped some structure for tractability. Restore:
+### 2. PI_E / TLUR fidelity restoration — DONE
 
-- **PI_E** — AR(1) correction on DL4PTM and the five GST dummies on
-  survey signals (currently dropped — see `fit_pie_kfas` docstring in
-  [state_space.R](packages/sibyldata/R/state_space.R)).
-- **TLUR** — lagged-inflation autoregression and import-price pass-
-  through in the Phillips curve signal. Requires pre-estimating more
-  coefficients via OLS, similar to the existing two-step `gamma_1`,
-  `gamma_2` machinery.
+Both v0 ports now have the dropped structure restored:
 
-### 3. Nowcast bridge equations (~½ session)
+- **PI_E**: 2-state model (cpistar + cpistarL1) with AR(1) correction
+  on DL4PTM signal and 5 GST dummies on survey signals. OLS-pre-est
+  of delta and 5 lambdas; pre-subtracted from observations to keep
+  KFAS linear.
+- **TLUR**: dlptm equation gains beta_{1..3} (lagged-inflation AR),
+  phi_1 (cross-equation ULC effect), alpha_1 (import-price
+  pass-through via dl4pimp from PMCG). dlulc equation gains
+  omega_{1..2} (lagged ULC AR). All pre-OLS-estimated; pre-subtracted
+  before KFAS sees the modified observations.
 
-`nowcast::nowcast_handover()` is currently univariate ARIMA per
-variable, recovering 82 % of headline aggregates within 5 % mean
-relative error against the fixture. Adding `method = "bridge"` that
-regresses quarterly outcomes on contemporaneous monthly LFS / retail
-trade / building approvals indicators (now available from live ABS)
-would close the remaining gap. The function signature already
-accommodates this.
+### 3. Nowcast bridge equations — PARTIAL
+
+`nowcast::nowcast_handover()` now supports `method = "bridge"`
+(AR(1) + seasonal-AR(1) ARIMA with auto-differencing). It's a step
+above naive but isn't yet a "true" monthly-indicator bridge —
+that requires exposing monthly data separately to nowcast (current
+pipeline aggregates upstream).
+
+Follow-up paths:
+- Surface monthly indicator series (`LE`, `RT_*`, `HOURS`, etc.) in
+  a separate slot of the database that nowcast can read independently
+  of the quarterly aggregates.
+- Add a curated indicators map: target → monthly indicator series
+  (e.g. RC → retail trade, ID → building approvals).
+- Implement true bridge regression: aggregate partial-quarter
+  monthly data, fit lm(quarterly_target ~ partial_quarterly_avg).
+
+### 4. Faithful state-space accuracy (~1 session)
+
+The faithful PI_E and TLUR ports trade a few correlation points
+against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
+TLUR cor ~ 0.8 vs the v0's roughly cor ~ 0.9 simpler structure). If
+accuracy is the priority over structural fidelity, the OLS-pre-est
+step can be replaced with EViews-published parameter values once
+those are available, or with joint MLE.
 
 ---
 
@@ -460,17 +482,23 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **RSTAR fixed-prior structural params + PI_E/TLUR fidelity +
+  nowcast bridge** — `fit_rstar_kfas_full` now ships with baked-in
+  structural params (RSTAR_FULL_PARAMS) that keep live estimates
+  stable; opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE` actually works
+  without falling back. `fit_pie_kfas` becomes a 2-state model with
+  the AR(1) DL4PTM correction and 5 GST dummies restored.
+  `fit_nairu_kfas` restores beta_{1..3}/phi_1/alpha_1 in dlptm and
+  omega_{1..2} in dlulc. `nowcast_handover` gains `method = "bridge"`.
 - **fit_rstar_kfas_full + NBR splice + coverage-based merge** — the
   faithful 11-state Okun-Phillips port of rstar.prg lands as
-  `fit_rstar_kfas_full`, opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE` (the
-  v0 simple smoother stays as default because pre-estimation OLS makes
-  the full port unstable on live data). NBR gains a historical splice
-  from F05_FILRLBWAV, lifting NBR live coverage from 27 → 190 obs;
-  RBR / IBCR live coverage follows. `merge_with_fallback` now uses
-  coverage-based comparison (primary wins only if both first_nna and
-  last_nna covers fallback) — fixes regressions where live series with
-  more total obs but narrower historical coverage incorrectly
-  overrode the fixture (N2R, NHC).
+  `fit_rstar_kfas_full`, opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`.
+  NBR gains a historical splice from F05_FILRLBWAV, lifting NBR live
+  coverage from 27 → 190 obs; RBR / IBCR live coverage follows.
+  `merge_with_fallback` now uses coverage-based comparison (primary
+  wins only if both first_nna and last_nna cover fallback) — fixes
+  regressions where live series with more total obs but narrower
+  historical coverage incorrectly overrode the fixture (N2R, NHC).
 - **IBNDR annual port** — replaces the static 1.5 placeholder with the
   faithful annual-data port from CFCIBN / KIBN ABS 5204.0 series.
 - **IBCR identity chain + IAD weights (v0 with static IBNDR)** —

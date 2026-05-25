@@ -168,3 +168,16 @@ test_that("nowcast recovers held-out actuals to within a wide tolerance", {
             label = sprintf("naive recovery pass rate (%.0f%%)",
                             pass_rate * 100))
 })
+
+test_that("bridge method returns the canonical shape for several variables", {
+  skip_if_not_installed("martin")
+  db <- martin::read_fixture()
+  out <- nowcast_handover(db, h = 2, method = "bridge",
+                          variables = c("RC", "NCR", "PTM"))
+  expect_setequal(names(out),
+                  c("variable", "quarter", "central", "lower", "upper",
+                    "method"))
+  expect_equal(nrow(out), 6L)  # 3 vars * 2 horizons
+  expect_true(all(is.finite(out$central)))
+  expect_true(all(out$method == "bridge"))
+})
