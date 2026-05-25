@@ -125,6 +125,12 @@ test_that("projection_diff_text() computes per-variable diff strings", {
   projection <- baseline
   projection$value <- projection$value + c(rep(1.0, 3), rep(0.1, 3))
   txt <- projection_diff_text(projection, baseline, variables = c("Y", "LUR"))
-  expect_match(txt, "Y:.*diff=\\+1\\.00")
-  expect_match(txt, "LUR:.*diff=\\+0\\.10")
+  # Y is a level variable: emits absolute diff + percent change.
+  expect_match(txt, "Y\\b.*diff=\\+1\\.00")
+  # LUR is a rate variable: emits diff in pp (the "(-5.2%)" form would be
+  # percent-change-of-a-percent, which the describer has misread as pp).
+  expect_match(txt, "LUR\\b.*diff=\\+0\\.10 pp")
+  # Both heads include the plain-English glossary label.
+  expect_match(txt, "Y \\[Real GDP")
+  expect_match(txt, "LUR \\[Unemployment rate")
 })

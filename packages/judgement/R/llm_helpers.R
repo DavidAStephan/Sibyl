@@ -133,6 +133,45 @@ system_prompt_propose <- function() {
     "     the LHS's natural units). One standard deviation is a meaningful but",
     "     not extreme adjustment. Going beyond 2x typical_af_sd requires",
     "     explicit narrative justification.",
+    "",
+    "     Worked examples from prior SIBYL rounds (use as scale anchors — your",
+    "     proposed values should produce comparable end-of-horizon effects):",
+    "",
+    "       Example A — sticky inflation, PTM (units=log_diff)",
+    "         Narrative: trimmed-mean inflation ~0.1pp/qtr higher than baseline",
+    "         AF: equation=PTM, values=0.001 repeated for 6 quarters, decay_50",
+    "         Realised: price level +1.3% by end-horizon, real Y/RC/GNE -0.5%,",
+    "                   NCR +1pp via endogenous Taylor Rule. Round-trip: agree.",
+    "",
+    "       Example B — structural NAIRU shift, TLUR (units=percent)",
+    "         Narrative: structural shift lowers LUR by ~1.5pp by 2025Q4",
+    "         AF: equation=TLUR, values=-0.075 repeated for 12 quarters, carry",
+    "         Realised: LUR -0.29pp by 2025Q4 (NOT -1.5pp). Only ~30% of TLUR's",
+    "                   level shift passes through to LUR within 12 quarters",
+    "                   because LUR's Okun error-correction is slow (LUR_DUM",
+    "                   coefficient = 0.025). Round-trip: partial — narrative",
+    "                   said -1.5pp, audit flagged the magnitude undershoot.",
+    "         LESSON: to hit a -1.5pp LUR target via TLUR, you need either a",
+    "         larger value (~-0.25/quarter) or a longer horizon (~30 quarters).",
+    "",
+    "       Example C — direct cyclical labour gap, LUR (units=level)",
+    "         Narrative: post-COVID structural tightening, LUR -1.6pp by 2024Q4",
+    "         AF: equation=LUR, values=-0.08 repeated for 20 quarters, decay_50",
+    "         Realised: LUR -1.6pp by 2024Q4 — closes the gap directly. LUR's",
+    "                   residual is on TSDELTA(LUR), so -0.08/qtr cumulates to",
+    "                   -1.6pp over 20 quarters. Round-trip: agree.",
+    "         LESSON: adjusting LUR directly delivers the target faster than",
+    "         going via TLUR; choose TLUR only when the narrative explicitly",
+    "         frames the shift as structural/equilibrium.",
+    "",
+    "       Critical heuristic: AFs on trend / NAIRU / R-star equations pass",
+    "       through to the corresponding cyclical variable only at ~25-40% of",
+    "       their level shift within the typical projection window. If the",
+    "       narrative quantifies the cyclical effect, prefer the cyclical",
+    "       equation. If it frames the change as structural/equilibrium, the",
+    "       trend equation is the right channel — but scale the AF up by ~3x",
+    "       to compensate for the damping.",
+    "",
     "  5. Adjustment LENGTH — `values` must have exactly horizon_end -",
     "     horizon_start + 1 quarters. Count carefully: 2025Q4 to 2027Q4 is 9",
     "     quarters (Q4 + 4 + 4), not 8 or 32. The parser will warn and",
@@ -261,6 +300,24 @@ parse_proposal_to_adjustment <- function(p,
 # variables.
 .percent_rate_vars <- c("LUR", "TLUR", "NCR", "RBR", "LPR", "NMR", "PI_E")
 
+# Short glossary for headline diff_text so the describer doesn't have to
+# guess variable meanings from cryptic MARTIN symbols (NCR is the nominal
+# cash rate, not "nominal cost of revenue", etc.).
+.variable_glossary <- list(
+  Y    = "Real GDP (chained $m)",
+  RC   = "Real household consumption (chained $m)",
+  GNE  = "Real gross national expenditure (chained $m)",
+  LUR  = "Unemployment rate (%)",
+  TLUR = "Trend unemployment / NAIRU (%)",
+  PTM  = "Trimmed-mean CPI (index)",
+  P    = "Headline CPI (index)",
+  NCR  = "Nominal cash rate / policy rate (%)",
+  RBR  = "Real cash rate (%)",
+  NMR  = "Bank mortgage rate (%)",
+  LPR  = "Labour participation rate (%)",
+  PI_E = "Inflation expectations (% annualised)"
+)
+
 projection_diff_text <- function(projection,
                                   baseline,
                                   variables = c("Y", "RC", "GNE", "LUR",
@@ -283,6 +340,8 @@ projection_diff_text <- function(projection,
     if (nrow(r) > 8L) r <- r[seq.int(nrow(r) - 7L, nrow(r)), ]
     v <- r$variable[1]
     is_rate <- v %in% .percent_rate_vars
+    label <- .variable_glossary[[v]]
+    head <- if (!is.null(label)) sprintf("%s [%s]", v, label) else v
     cells <- if (is_rate) {
       sprintf("%s diff=%+.2f pp (baseline=%.2f pp)",
               r$quarter, r$diff_abs, r$baseline_value)
@@ -290,7 +349,7 @@ projection_diff_text <- function(projection,
       sprintf("%s diff=%+.2f (%+.1f%%)",
               r$quarter, r$diff_abs, r$diff_pct)
     }
-    paste0(v, ": ", paste(cells, collapse = ", "))
+    paste0(head, ": ", paste(cells, collapse = ", "))
   }, character(1))
   paste(lines, collapse = "\n")
 }
