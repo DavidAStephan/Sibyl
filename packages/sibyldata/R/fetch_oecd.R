@@ -52,11 +52,15 @@ fetch_oecd <- function(series_ids,
     }
     dataflow <- parts[1]
     key      <- paste(parts[-1], collapse = "/")
+    # Strip any trailing '?' the caller might have copied in from
+    # OECD's docs (the URL-builder adds its own query string).
+    key <- sub("\\?$", "", key)
+    # Do NOT URL-encode the dataflow or key: OECD SDMX expects literal
+    # commas, '@', '+', '.' in the path. Only the query-string values
+    # (startPeriod, format) need encoding, which is just ASCII alnum.
     url <- sprintf(
       "%s/%s/%s?startPeriod=%s&format=csvfilewithlabels",
-      base_url, utils::URLencode(dataflow, reserved = TRUE),
-      utils::URLencode(key, reserved = TRUE),
-      substr(observation_start, 1L, 7L)
+      base_url, dataflow, key, substr(observation_start, 1L, 7L)
     )
 
     txt <- tryCatch(
