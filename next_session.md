@@ -24,7 +24,7 @@ Status as of the last commit:
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
 | Round report | renders to `reports/round.html` |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 18/18 targets succeed; pipeline now runs the full iterative-refinement loop (propose → solve → describe → audit → if disagree, refine, repeat). ~1m10s wall clock with Haiku across all LLM steps. Inspectable per-iter history at `tar_load(refinement_history)`. |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 19/19 targets succeed. Pipeline includes (a) a pre-computed sensitivity matrix per equation, (b) the iterative-refinement loop, (c) best-iter selection. LUR-narrative round now hits the magnitude target on iter 1 (LUR -1.28pp realised vs -1.5pp narrative) with the LLM correctly picking LUR over TLUR. ~1m32s wall clock cold (Haiku throughout; sensitivity build is ~30s of that). |
 
 The 15 skips are all intentional — live-API tests that require keys
 (FRED_API_KEY, ANTHROPIC_API_KEY) that aren't required for CI.
@@ -245,19 +245,51 @@ override the LLM's own preferences. Two paths to address:
   equation X with value Y, got effect Z far below the target — try
   a different equation or much larger value."
 
-### 5. Sensitivity-matrix appendix (~1 session)
+### 5. Sensitivity-matrix appendix — DONE (option c)
 
-Pre-solve a unit-shock for each adjustable equation and store the
-resulting deviations on the key aggregates as a static matrix. Feed
-it to the LLM as a "if you adjust X by 1 unit, expect Y to move by Z
-over N quarters" lookup. This closes the calibration gap *before* the
-solve (vs. the iterative loop which closes it *after*), so a single
-propose pass can get magnitudes right.
+Implemented as `martin::sensitivity_matrix(database, baseline, horizon,
+...)` plus `judgement::format_sensitivity_text(matrix)`. For each of
+the 56 adjustable equations, pre-solves with a per-unit-type
+calibration shock (small enough not to blow up MARTIN; log_diff=0.001,
+level=0.05, percent=0.10) sustained over 4 quarters with decay_50, and
+records deviations on the 7 headline aggregates at h+1, h+4, h+8, h+16.
+~30s build, cached by targets. Renders as ~3.4k tokens of grouped text
+that goes into the propose / refine system prompt.
 
-Cost: ~95 pre-solves at ~1-2s each = ~3 minutes (cacheable, only
-re-run when re-estimation_end changes); plus the prompt-format design
-work. Big payoff because it'd let the LLM reason about multi-equation
-interactions before committing to a proposal.
+The propose prompt now instructs the LLM to use the matrix as its
+**primary** calibration source — linear scaling of the deviations
+approximates the effect of larger shocks. New `sensitivity_matrix`
+argument threaded through `propose_adjustments()`,
+`refine_adjustments()`, and `propose_with_refinement()`. Pipeline now
+19 targets.
+
+**Live LUR-narrative result (first iteration!):**
+
+- Equation choice: **LUR** (correct; previously the LLM flipped between
+  LUR and TLUR across runs).
+- Value: -0.12 / quarter over 12 quarters.
+- Realised: LUR -1.28pp by 2025Q4 (target -1.5pp; off by 0.22pp,
+  within the auditor's "roughly 1.5pp" tolerance).
+- Round-trip: LUR claim **agree** on iter 1.
+- Cash-rate / inflation claims still disagree, but those are the
+  unavoidable MARTIN responses (Taylor Rule + Phillips curve) to a
+  1.5pp labour-market shock — the narrative is over-constrained, not
+  the LLM. Iter 2-3 added NCR AFs trying to cancel; best-iter
+  correctly picked iter 1 as the cleanest proposal.
+
+**Follow-ups if you want more polish here:**
+- The propose model is still Haiku. Sonnet 4.6 might use the matrix
+  more decisively (Haiku is observed to ignore the "linear scaling"
+  hint sometimes). Test cost is one extra round.
+- Currently the matrix is built once at pipeline start with a fixed
+  shock at 2020Q1. If `estimation_end` extends past 2025Q2 in a future
+  round, the shock window may need to shift to a later quarter so the
+  16-quarter offset still fits inside the horizon.
+- The over-constrained-narrative case (LUR target hit but cash-rate /
+  inflation unavoidably move) is a *real* finding the round-trip
+  surfaces — could be made more visible in the report (e.g. "the
+  audit flagged claim X because of MARTIN's endogenous response, not
+  a translation error").
 
 ### 6. RSTAR full-port accuracy improvement (~½–1 session)
 
@@ -644,6 +676,23 @@ CLAUDE.md                        ← context for sessions
 
 See `git log` for the canonical history. Recent commits, newest first:
 
+- **Sensitivity matrix + threaded through propose/refine prompts** —
+  closes option (c) of the calibration follow-ups. New
+  `martin::sensitivity_matrix()` pre-solves a per-unit-type
+  calibration shock on each of the 56 adjustable equations and
+  records deviations on the 7 headline aggregates at h+1, h+4, h+8,
+  h+16. `judgement::format_sensitivity_text()` renders the result as
+  ~3.4k-token text grouped by equation, filtered to entries with
+  meaningful propagation. System prompt instructs the LLM to use the
+  matrix as its primary calibration source. Threaded through
+  `propose_adjustments()`, `refine_adjustments()`,
+  `propose_with_refinement()`. New `sensitivity_matrix` target in
+  `_targets.R` (19 targets now). Live LUR-narrative test: LLM picks
+  LUR (correct) with value=-0.12 over 12 quarters → realised
+  LUR -1.28pp vs -1.5pp narrative target on iter 1, round-trip "agree"
+  on the LUR claim. The earlier session's TLUR/LUR confusion is gone:
+  the matrix shows the LLM that LUR-direct shocks pass through ~5x
+  more strongly than TLUR shocks at h+16, and it picks accordingly.
 - **Iterative refinement loop** — closes option (a) of the calibration
   follow-ups. New `propose_with_refinement()` orchestrator runs the
   agentic loop in the judgement package; new `refine_adjustments()`
