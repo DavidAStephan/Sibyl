@@ -21,7 +21,7 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | 539 pass, 0 fail (~10 skip; live-API tests that need keys) |
+| Test suite | 553 pass, 0 fail (~11 skip; live-API tests that need keys) |
 | Pipeline `tar_make()` (live default) | 21/21 targets, ~8m cold (live data fetch + sensitivity matrix dominate) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | 100 % of the fixture's 205 vars (live + dummies/scalars + fixture fallback for long-history series) |
@@ -126,25 +126,33 @@ Tricky bits to handle:
 - 11+ free params is identifiability-risky on quarterly data;
   consider 5-7 (variances + 2-3 most sensitive structural params).
 
-### 2. Trading-partner-weighted world variables (~½ session)
+### 2. TPW: extend to WY (real GDP) and WPX (export price) — ~½ session
 
-`fetch_oecd()` now exists as a single-series SDMX fetcher. The follow-
-up is the proper TPW build:
+`compute_tpw()` + `build_tpw_cpi()` shipped this session — WP is a
+working trading-partner-weighted CPI via OECD's monthly prices
+dataflow. WY (real GDP) and WPX (export price) need their own OECD
+dataflow keys figured out:
 
-1. Fetch OECD QNA quarterly real GDP / CPI / export-price for
-   Australia's top trading partners (CN, JP, US, KR, SG, IN, NZ, GB,
-   DE, TH — covers ~85% of two-way trade).
-2. Source partner export-share weights from ABS table 5368.0
-   (`Exports of goods and services, country and country groups`).
-3. Compute `WY = sum_i weight_i(t) * real_GDP_i(t) / real_GDP_i(t0)`
-   (and analogous for WP, WPX) — possibly with rolling weights
-   averaged over 3-5 years to match what the RBA publishes.
-4. Catalogue rows for WY/WP/WPX flip `source` from `fred` to `oecd`
-   plus a new derived layer to do the weighting.
+- WY: OECD QNA dataflow (`OECD.SDD.NAD,DSD_NAMAIN1@DF_QNA,1.0/...`)
+  uses a 13-position SDMX key. The CSV endpoint works (curl confirmed),
+  just need to find the right combination of (REF_AREA, FREQ, MEASURE,
+  UNIT_MEASURE, ...) for "quarterly real GDP chained volume". OECD's
+  SDMX dataflow-structure endpoint lists the dimensions per dataflow:
+  ```
+  curl 'https://sdmx.oecd.org/public/rest/dataflow/OECD.SDD.NAD/DSD_NAMAIN1@DF_QNA/1.0'
+  ```
+- WPX: similar story for export price deflators. Probably lives in
+  the same QNA dataflow under a different MEASURE.
 
-The current FRED US proxies aren't *wrong* — the US is a third of
-TPW trade weight — but they fail when narratives reference partners
-the US doesn't track (e.g. Chinese slowdown).
+Once both keys are known, parallel `build_tpw_real_gdp()` and
+`build_tpw_export_price()` are one-paste-each from `build_tpw_cpi()`.
+
+After all three TPW series are buildable, the catalogue rows for
+WY / WP / WPX can flip `source = "fred"` -> `source = "oecd"` with
+a derived-formula layer that does the partner-weighting. The current
+hardcoded weights in `tpw_partner_weights()` can also be refreshed
+from live ABS 5368.0 data (rolling 3-year average is closer to the
+RBA convention than a fixed 2022-24 average).
 
 ### 3. Joint-MLE-RSTAR variant validation (~¼ session)
 
@@ -335,7 +343,17 @@ For canonical history use `git log`. Major landed workstreams:
     targets and fixture-mode runs.
 
 - **Data layer:**
-  - `fetch_oecd()` single-series SDMX fetcher; the trading-partner-
-    weighted aggregate computation (item 2) is the remaining piece.
+  - `fetch_oecd()` single-series SDMX fetcher (CPI confirmed working;
+    QNA / export-price keys still TBD — item 2 above).
+  - `compute_tpw()` pure-math weighted aggregate + `build_tpw_cpi()`
+    opt-in trading-partner-weighted WP build (live OECD round-trip
+    verified). `tpw_partner_weights()` returns the canonical CN/JP/
+    KOR/USA/IND/NZL/GBR/DEU + OECD_OTHER weight vector.
   - Catalogue derived rows for PAE, NBRSP, LURGAP have proper
     formulas (`NHCOE / (LHPP * LE)`, `NBR - NCR`, `LUR - TLUR`).
+
+- **Documentation:**
+  - [docs/llm_layer.md](docs/llm_layer.md) — 500+ line walkthrough of
+    the propose / describe / audit / refine loop, the sensitivity
+    matrix, `diagnose_audit()`, and a worked example from the live
+    pipeline. Read this before touching anything in `judgement/`.
