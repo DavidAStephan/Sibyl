@@ -116,9 +116,9 @@ PXM,derived,NA,NA,Q,NA,derived,PXM = NXM / XM * 100 (manufactured export deflato
 PXO,derived,NA,NA,Q,NA,derived,PXO = NXO / XO * 100 (other export deflator),Index,NXO / XO * 100
 PXRE,derived,NA,NA,Q,NA,derived,PXRE = NXRE / XRE * 100 (resource export deflator),Index,NXRE / XRE * 100
 PXS,derived,NA,NA,Q,NA,derived,PXS = NXS / XS * 100 (services export deflator),Index,NXS / XS * 100
-PAE,derived,NA,NA,Q,NA,derived,PAE = NHCOE / (LHPP * LE) (average earnings per hour from national accounts),AUD per hour,NA
+PAE,derived,NA,NA,Q,NA,derived,PAE = NHCOE / (LHPP * LE) (average earnings per hour from national accounts),AUD per hour,NHCOE / (LHPP * LE)
 LUR,derived,NA,NA,Q,NA,derived,LUR = 100 * (1 - LE / LF) (unemployment rate); falls back to UR_hist when missing,Percent,100 * (1 - LE / LF)
-NBRSP,derived,NA,NA,Q,NA,derived,NBRSP = NBR - NCR (business rate spread to cash rate),Percentage points,NA
+NBRSP,derived,NA,NA,Q,NA,derived,NBRSP = NBR - NCR (business rate spread to cash rate),Percentage points,NBR - NCR
 NSP,derived,NA,NA,Q,NA,derived,NSP = NMR - NCR (mortgage rate spread to cash rate),Percentage points,NMR - NCR
 XM_MACH,abs,A3535051A,5302.0,Q,NA,direct,Machinery and transport manufactures exports (real),AUD millions,NA
 XM_TRNS,abs,A3535052C,5302.0,Q,NA,direct,Transport equipment exports (real),AUD millions,NA
@@ -161,7 +161,7 @@ NULC,derived,NA,NA,Q,NA,derived,NULC = NHCOE / Y (nominal unit labour cost),AUD 
 RLC,derived,NA,NA,Q,NA,derived,RLC = PAE / PGNE (real labour cost),Index,PAE / PGNE
 RULC,derived,NA,NA,Q,NA,derived,RULC = NULC / PGNE (real unit labour cost),Index,NULC / PGNE
 RULCY,derived,NA,NA,Q,NA,derived,"RULCY = NULC / PY (real unit labour cost, GDP-deflated)",Index,NULC / PY
-LURGAP,derived,NA,NA,Q,NA,derived,LURGAP = LUR - TLUR (unemployment gap above NAIRU),Percentage points,NA
+LURGAP,derived,NA,NA,Q,NA,derived,LURGAP = LUR - TLUR (unemployment gap above NAIRU),Percentage points,LUR - TLUR
 D_OLY,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 2004Q4 (post-Olympics revision shock),0/1,NA
 D_AFC1,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1997Q3 (Asian Financial Crisis Q1),0/1,NA
 D_AFC2,derived,NA,NA,Q,NA,dummy,Pulse dummy: 1 at 1997Q4 (Asian Financial Crisis Q2),0/1,NA
