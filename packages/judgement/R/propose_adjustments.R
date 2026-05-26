@@ -29,12 +29,13 @@
 #' @return A [judgement::adjustment_list()].
 #' @export
 propose_adjustments <- function(narrative,
-                                baseline       = NULL,
-                                round_id       = NA_character_,
-                                owner          = "llm",
-                                historical_afs = NULL,
-                                model          = "claude-opus-4-7",
-                                chat           = NULL) {
+                                baseline           = NULL,
+                                round_id           = NA_character_,
+                                owner              = "llm",
+                                historical_afs     = NULL,
+                                sensitivity_matrix = NULL,
+                                model              = "claude-opus-4-7",
+                                chat               = NULL) {
   stopifnot(
     is.character(narrative), length(narrative) == 1L, nzchar(narrative)
   )
@@ -58,8 +59,13 @@ propose_adjustments <- function(narrative,
     sep = "\n"
   )
 
-  chat <- get_chat(chat, system_prompt = system_prompt_propose(),
-                   model = model)
+  sens_text <- if (!is.null(sensitivity_matrix)) {
+    format_sensitivity_text(sensitivity_matrix)
+  } else NULL
+  chat <- get_chat(
+    chat, system_prompt = system_prompt_propose(sensitivity_text = sens_text),
+    model = model
+  )
   result <- chat$chat_structured(prompt, type = proposal_schema())
   parse_proposal_result(result, round_id = round_id, owner = owner,
                         source = "llm")
@@ -118,11 +124,12 @@ refine_adjustments <- function(narrative,
                                prior_adjustments,
                                prior_description,
                                audit,
-                               iteration         = 2L,
-                               round_id          = NA_character_,
-                               owner             = "llm",
-                               model             = "claude-opus-4-7",
-                               chat              = NULL) {
+                               iteration          = 2L,
+                               round_id           = NA_character_,
+                               owner              = "llm",
+                               sensitivity_matrix = NULL,
+                               model              = "claude-opus-4-7",
+                               chat               = NULL) {
   stopifnot(
     is.character(narrative), length(narrative) == 1L, nzchar(narrative),
     inherits(prior_adjustments, "adjustment_list"),
@@ -170,8 +177,13 @@ refine_adjustments <- function(narrative,
     sep = "\n"
   )
 
-  chat <- get_chat(chat, system_prompt = system_prompt_propose(),
-                   model = model)
+  sens_text <- if (!is.null(sensitivity_matrix)) {
+    format_sensitivity_text(sensitivity_matrix)
+  } else NULL
+  chat <- get_chat(
+    chat, system_prompt = system_prompt_propose(sensitivity_text = sens_text),
+    model = model
+  )
   result <- chat$chat_structured(prompt, type = proposal_schema())
   parse_proposal_result(result, round_id = round_id, owner = owner,
                         source = "llm-refined")
@@ -238,12 +250,13 @@ format_audit_table <- function(audit) {
 propose_with_refinement <- function(narrative,
                                     baseline,
                                     solve_fn,
-                                    max_iters      = 3L,
-                                    round_id       = NA_character_,
-                                    owner          = "llm",
-                                    historical_afs = NULL,
-                                    model          = "claude-opus-4-7",
-                                    chat           = NULL) {
+                                    max_iters          = 3L,
+                                    round_id           = NA_character_,
+                                    owner              = "llm",
+                                    historical_afs     = NULL,
+                                    sensitivity_matrix = NULL,
+                                    model              = "claude-opus-4-7",
+                                    chat               = NULL) {
   stopifnot(
     is.character(narrative), length(narrative) == 1L, nzchar(narrative),
     is.function(solve_fn),
@@ -252,13 +265,14 @@ propose_with_refinement <- function(narrative,
 
   history <- list()
   adjustments <- propose_adjustments(
-    narrative      = narrative,
-    baseline       = baseline,
-    round_id       = round_id,
-    owner          = owner,
-    historical_afs = historical_afs,
-    model          = model,
-    chat           = chat
+    narrative          = narrative,
+    baseline           = baseline,
+    round_id           = round_id,
+    owner              = owner,
+    historical_afs     = historical_afs,
+    sensitivity_matrix = sensitivity_matrix,
+    model              = model,
+    chat               = chat
   )
 
   for (iter in seq_len(as.integer(max_iters))) {
@@ -286,16 +300,17 @@ propose_with_refinement <- function(narrative,
     if (!isTRUE(attr(audit, "overall_match") == "agree") &&
         iter < as.integer(max_iters)) {
       adjustments <- refine_adjustments(
-        narrative         = narrative,
-        baseline          = baseline,
-        prior_adjustments = adjustments,
-        prior_description = description,
-        audit             = audit,
-        iteration         = iter + 1L,
-        round_id          = round_id,
-        owner             = owner,
-        model             = model,
-        chat              = chat
+        narrative          = narrative,
+        baseline           = baseline,
+        prior_adjustments  = adjustments,
+        prior_description  = description,
+        audit              = audit,
+        iteration          = iter + 1L,
+        round_id           = round_id,
+        owner              = owner,
+        sensitivity_matrix = sensitivity_matrix,
+        model              = model,
+        chat               = chat
       )
     } else {
       break

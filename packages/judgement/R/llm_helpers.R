@@ -103,9 +103,14 @@ comparison_schema <- function() {
 # ---- Prompt construction --------------------------------------------------
 
 # Build the system prompt for propose_adjustments(). Includes the equation
-# catalogue (filtered to adjustable) and the SIBYL rules of engagement.
-system_prompt_propose <- function() {
+# catalogue (filtered to adjustable), the SIBYL rules of engagement, and
+# (optionally) a pre-computed sensitivity matrix showing the realised
+# propagation of a standardized unit shock on each equation.
+system_prompt_propose <- function(sensitivity_text = NULL) {
   cat <- catalogue_adjustable_text()
+  has_sens <- !is.null(sensitivity_text) &&
+              is.character(sensitivity_text) &&
+              nzchar(sensitivity_text)
   paste(
     "You are SIBYL's adjustment proposer.",
     "",
@@ -186,6 +191,30 @@ system_prompt_propose <- function() {
     "MARTIN equation catalogue (adjustable equations only):",
     "",
     cat,
+    if (has_sens) "" else NULL,
+    if (has_sens) {
+      paste(
+        "Sensitivity matrix (PRE-COMPUTED PROPAGATION TABLE).",
+        "",
+        "For each adjustable equation, the table below shows what a",
+        "standardized unit shock (e.g. +0.001/quarter on log_diff equations,",
+        "+0.05/quarter on level equations, +0.10/quarter on percent",
+        "equations) sustained over 4 quarters with decay_50 actually does to",
+        "the headline aggregates, at offsets h+1, h+4, h+8, h+16 from the",
+        "shock start. USE THIS as your primary calibration source -- linear",
+        "scaling is approximately valid for AFs up to ~3x the standardized",
+        "shock, so to estimate the effect of a 2x shock, double the",
+        "deviations below.",
+        "",
+        "Targets with no meaningful response (|dev_pct| < 0.05%) are omitted;",
+        "equations with no meaningful response on any target are omitted",
+        "entirely. Entries marked [own equation] show the shock's effect on",
+        "its own variable (useful for sanity-checking persistence).",
+        sep = "\n"
+      )
+    } else NULL,
+    if (has_sens) "" else NULL,
+    if (has_sens) sensitivity_text else NULL,
     sep = "\n"
   )
 }
@@ -235,6 +264,80 @@ baseline_summary_text <- function(baseline,
     )
   }, character(1))
   paste(lines, collapse = "\n")
+}
+
+#' Format a sensitivity matrix as text for inclusion in an LLM prompt
+#'
+#' Renders the long tibble produced by [martin::sensitivity_matrix()] as a
+#' compact text block grouped by equation, showing only meaningful
+#' propagations (e.g. \|deviation_pct\| > pct_threshold at any offset, OR
+#' target is the equation's own variable). Equations with no significant
+#' effects are omitted entirely so the prompt stays tight.
+#'
+#' @param matrix Output tibble from `martin::sensitivity_matrix()`.
+#' @param pct_threshold Drop a (equation, target) entry unless at least one
+#'   offset has \|deviation_pct\| above this percentage. Default 0.05 (= 0.05%).
+#' @param keep_own Always keep the entry where target == equation (default TRUE).
+#' @return A single character string suitable for paste()ing into a prompt.
+#' @export
+format_sensitivity_text <- function(matrix,
+                                    pct_threshold = 0.05,
+                                    keep_own      = TRUE) {
+  if (!is.data.frame(matrix) || nrow(matrix) == 0L) {
+    return("(no sensitivity matrix available)")
+  }
+  required <- c("equation", "units", "shock_value", "shock_quarters",
+                "target", "offset_q", "deviation", "deviation_pct")
+  missing <- setdiff(required, names(matrix))
+  if (length(missing)) {
+    return(paste("(sensitivity matrix missing fields:",
+                 paste(missing, collapse = ", "), ")"))
+  }
+
+  # Mark "rate-style" variables for which "pp" makes more sense than "%".
+  rate_vars <- c("LUR", "TLUR", "NCR", "RBR", "LPR", "NMR", "PI_E")
+
+  out <- list()
+  for (eq in unique(matrix$equation)) {
+    sub <- matrix[matrix$equation == eq, , drop = FALSE]
+    units <- sub$units[1]
+    shock_val <- sub$shock_value[1]
+    shock_q <- sub$shock_quarters[1]
+
+    # Per-target filter: keep if any offset has |deviation_pct| > threshold
+    # OR target == equation (own equation always shown).
+    lines <- list()
+    for (tgt in unique(sub$target)) {
+      t <- sub[sub$target == tgt, , drop = FALSE]
+      t <- t[order(t$offset_q), , drop = FALSE]
+      is_own <- identical(tgt, eq)
+      has_signal <- any(!is.na(t$deviation_pct) &
+                          abs(t$deviation_pct) > pct_threshold)
+      if (!has_signal && !(keep_own && is_own)) next
+
+      is_rate <- tgt %in% rate_vars
+      cells <- if (is_rate) {
+        sprintf("h+%d=%+.3fpp", t$offset_q, t$deviation)
+      } else {
+        sprintf("h+%d=%+.2f%%", t$offset_q, t$deviation_pct)
+      }
+      lines[[length(lines) + 1L]] <- sprintf(
+        "  %-4s: %s%s", tgt, paste(cells, collapse = ", "),
+        if (is_own) "  [own equation]" else ""
+      )
+    }
+    if (length(lines) == 0L) next
+
+    header <- sprintf(
+      "- %s (units=%s, shock=%+g per quarter sustained over %d quarters, decay_50):",
+      eq, units, shock_val, shock_q
+    )
+    out[[length(out) + 1L]] <- paste(c(header, unlist(lines)), collapse = "\n")
+  }
+  if (length(out) == 0L) {
+    return("(sensitivity matrix has no entries above the threshold)")
+  }
+  paste(unlist(out), collapse = "\n")
 }
 
 # Convert a parsed LLM proposal (named list with `equation`, `horizon_start`,

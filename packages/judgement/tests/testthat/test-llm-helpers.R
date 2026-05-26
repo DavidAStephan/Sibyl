@@ -134,3 +134,75 @@ test_that("projection_diff_text() computes per-variable diff strings", {
   expect_match(txt, "Y \\[Real GDP")
   expect_match(txt, "LUR \\[Unemployment rate")
 })
+
+# ---- format_sensitivity_text() ------------------------------------------
+
+sensitivity_fixture <- function() {
+  tibble::tibble(
+    equation       = c("PTM", "PTM", "PTM", "PTM",
+                       "LUR", "LUR", "LUR",
+                       "TLUR", "TLUR"),
+    units          = c(rep("log_diff", 4), rep("level", 3), rep("percent", 2)),
+    typical_af_sd  = c(rep(0.1, 4), rep(0.15, 3), rep(0.1, 2)),
+    shock_value    = c(rep(0.001, 4), rep(0.05, 3), rep(0.1, 2)),
+    shock_quarters = 4L,
+    target         = c("PTM", "P", "Y", "NCR",
+                       "LUR", "Y", "PTM",
+                       "LUR", "NCR"),
+    offset_q       = c(1L, 4L, 8L, 16L,
+                       4L, 8L, 4L,
+                       8L, 4L),
+    deviation      = c(0.30, 2.86, -500, 0.5,
+                       0.23, 1100, 0.00,
+                       0.16, 0.47),
+    deviation_pct  = c(0.26, 0.75, -0.10, 12.0,
+                       4.43, 0.24, 0.00,
+                       3.23, 14.0)
+  )
+}
+
+test_that("format_sensitivity_text() renders per-equation blocks", {
+  txt <- format_sensitivity_text(sensitivity_fixture())
+  # Each equation header appears.
+  expect_match(txt, "- PTM \\(units=log_diff")
+  expect_match(txt, "- LUR \\(units=level")
+  expect_match(txt, "- TLUR \\(units=percent")
+  # Own-equation marker.
+  expect_match(txt, "PTM.*own equation")
+  # Rate variables use pp; level/log_diff variables use %.
+  expect_match(txt, "LUR\\s*:.*h\\+4=\\+0\\.230pp")
+  expect_match(txt, "PTM\\s*:.*h\\+4=\\+0\\.75%")
+})
+
+test_that("format_sensitivity_text() drops entries below pct_threshold", {
+  # PTM -> PTM(0.26%) and PTM -> P(0.75%) survive a 0.05 threshold; the
+  # PTM -> Y entry (-0.10%) is kept; the TLUR -> PTM entry (0.00%) drops
+  # because it has no signal and isn't own-equation.
+  fixture <- sensitivity_fixture()
+  txt <- format_sensitivity_text(fixture, pct_threshold = 0.5)
+  # Entries below threshold are absent.
+  expect_false(grepl("LUR:.*PTM:.*h\\+4=\\+0\\.00%", txt))
+})
+
+test_that("format_sensitivity_text() handles empty + malformed inputs", {
+  expect_match(
+    format_sensitivity_text(tibble::tibble()),
+    "no sensitivity matrix"
+  )
+  expect_match(
+    format_sensitivity_text(tibble::tibble(equation = "PTM", target = "P")),
+    "missing fields"
+  )
+})
+
+test_that("system_prompt_propose() includes sensitivity block when text given", {
+  skip_if_not_installed("martin")
+  with_sens <- system_prompt_propose(
+    sensitivity_text = "- PTM (units=log_diff, ...):\n  PTM: h+4=+0.75%"
+  )
+  expect_match(with_sens, "Sensitivity matrix")
+  expect_match(with_sens, "PTM: h\\+4=\\+0\\.75%")
+
+  without_sens <- system_prompt_propose()
+  expect_false(grepl("Sensitivity matrix", without_sens))
+})

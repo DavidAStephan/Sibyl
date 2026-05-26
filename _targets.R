@@ -159,12 +159,35 @@ list(
   ),
 
   # ---------------------------------------------------------------------------
+  # 4b. Sensitivity matrix — pre-compute the realised propagation of a
+  #     standardized unit shock on each adjustable equation, so the LLM
+  #     can reason about magnitudes from observed numbers rather than
+  #     guesses. Cached as a long tibble; only re-builds when database /
+  #     horizon / estimation_end change. ~30s build on 56 equations.
+  # ---------------------------------------------------------------------------
+  tar_target(sensitivity_matrix,
+    martin::sensitivity_matrix(
+      database       = database_with_handover,
+      baseline       = baseline,
+      horizon        = horizon,
+      estimation_end = estimation_end,
+      shock_start    = "2020Q1",
+      shock_quarters = 4L,
+      measure_offsets = c(1L, 4L, 8L, 16L),
+      progress       = FALSE
+    )
+  ),
+
+  # ---------------------------------------------------------------------------
   # 5. Judgement — narrative -> add-factor proposals, with iterative
   #    refinement against the round-trip audit. The orchestrator
   #    `propose_with_refinement()` runs:
   #      propose -> solve -> describe -> audit
   #      -> if audit disagrees, refine (re-prompt LLM with audit feedback)
   #      -> repeat up to max_iters times.
+  #    The sensitivity_matrix is threaded into the propose + refine prompts
+  #    so the LLM can pick AF magnitudes from observed propagation rather
+  #    than guessing.
   #    ANTHROPIC_API_KEY absent => empty adjustment list (degraded but
   #    complete pipeline run).
   # ---------------------------------------------------------------------------
@@ -182,12 +205,13 @@ list(
         )
       }
       judgement::propose_with_refinement(
-        narrative = narrative,
-        baseline  = baseline,
-        solve_fn  = solve_fn,
-        max_iters = 3L,
-        round_id  = round_id,
-        model     = "claude-haiku-4-5"
+        narrative          = narrative,
+        baseline           = baseline,
+        solve_fn           = solve_fn,
+        max_iters          = 3L,
+        round_id           = round_id,
+        sensitivity_matrix = sensitivity_matrix,
+        model              = "claude-haiku-4-5"
       )
     } else {
       message("[targets] ANTHROPIC_API_KEY not set; ",

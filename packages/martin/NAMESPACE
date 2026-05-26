@@ -2,6 +2,7 @@
 
 export(load_martin)
 export(solve_martin)
+export(sensitivity_matrix)
 export(equation_catalogue)
 export(martin_data_fixture)
 export(model_file_path)
