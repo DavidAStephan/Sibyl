@@ -542,7 +542,9 @@ fit_pie_kfas <- function(database, sample_start = "1985Q4") {
 
   # ---- OLS pre-estimation of delta (AR-on-DL4PTM) and 5 lambdas ----
   # delta: regress dl4ptm on its own lag plus a centred-MA proxy
-  # mimicking EViews's DL4PTMsmooth.
+  # mimicking EViews's DL4PTMsmooth. HP filter was tried here but the
+  # heavier smoothing destabilises the small-sample OLS; the
+  # window-12 centred MA matches the EViews DL4PTMsmooth choice.
   smooth_ma <- function(x, win = 12L) {
     out <- stats::filter(x, rep(1 / win, win), sides = 2)
     out <- as.numeric(out)
@@ -745,15 +747,10 @@ fit_nairu_kfas <- function(database, sample_start = "1986Q3") {
   start_idx <- ts_meta$quarter_index(sample_start)
   if (is.na(start_idx) || start_idx < 1L) start_idx <- 1L
 
-  # Step 1: HP-like smoothed LUR for ugap_init.
-  win <- 20L
-  lur_sm <- stats::filter(lur, rep(1 / win, win), sides = 2)
-  lur_sm <- as.numeric(lur_sm)
-  nonna <- which(!is.na(lur_sm))
-  if (length(nonna)) {
-    lur_sm[seq_len(nonna[1] - 1L)] <- lur_sm[nonna[1]]
-    lur_sm[(tail(nonna, 1) + 1L):n_total] <- lur_sm[tail(nonna, 1)]
-  }
+  # Step 1: HP-filtered LUR for ugap_init (lambda=1600 quarterly).
+  # Replaces the prior 20-window centred MA which flat-lined the last
+  # ~10 quarters and gave a biased ugap seed near the sample edge.
+  lur_sm <- hp_filter(lur, lambda = 1600)
   ugap_init <- lur - lur_sm
 
   # Lag helper.
