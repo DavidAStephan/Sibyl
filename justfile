@@ -37,6 +37,10 @@ pipeline-fresh:
 report:
     quarto render reports/round.qmd
 
+# Launch the SIBYL dashboard (Shiny app)
+dashboard:
+    Rscript app/run.R
+
 # Reinstall the four packages locally (without renv::snapshot)
 install:
     Rscript -e 'for (pkg in list.dirs("packages", recursive = FALSE)) devtools::install(pkg, upgrade = "never", quick = TRUE)'

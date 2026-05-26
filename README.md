@@ -97,7 +97,11 @@ The pipeline runs end-to-end. A round goes:
    narrative coherence diagnostics.
 
 The LLM-layer architecture is documented in
-[docs/llm_layer.md](docs/llm_layer.md) with a worked example.
+[docs/llm_layer.md](docs/llm_layer.md) with a worked example. For
+interactive use, the Shiny dashboard at
+[`app/app.R`](app/app.R) takes a narrative and runs the round
+end-to-end with a live chart of the result — see
+[docs/dashboard.md](docs/dashboard.md). Launch with `just dashboard`.
 
 See [DESIGN.md](DESIGN.md) for the longer architectural story and
 [CLAUDE.md](CLAUDE.md) for context to load into a coding session.
