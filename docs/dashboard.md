@@ -47,28 +47,32 @@ SIBYL_NO_LAUNCH_BROWSER=1 just dashboard
 ## Layout
 
 ```
-┌─────────────────────┬────────────────────────────────────────────┐
-│ SIDEBAR             │ MAIN AREA  (tabs)                          │
-│                     │                                            │
-│ [Narrative textbox] │ [ Chart ] [ Adjustments ] [ Description ]  │
-│                     │ [ Audit ] [ Iteration history ]            │
-│ Refinement iters    │                                            │
-│ Propose model       │ ... contents of the selected tab ...       │
-│                     │                                            │
-│ [Run round]         │                                            │
-│ status line         │                                            │
-└─────────────────────┴────────────────────────────────────────────┘
++----------------------------------------------------------------------+
+| [ ink-dark header band ]  SIBYL  -  Narrative-to-projection ...      |
+|                                       horizon ... | re-est ... | eqs |
++----------------------+-----------------------------------------------+
+| SIDEBAR              | MAIN AREA  (cards with tabs)                  |
+| Forecast narrative   |                                               |
+|  [textarea]          | [ Chart ] [ Adjustments ] [ Description ]     |
+| Round configuration  | [ Audit ] [ History ]                         |
+|  iter / model        |                                               |
+| [ Run round  -> ]    | (selected tab content)                        |
+| status panel         |                                               |
+| cache info           |                                               |
++----------------------+-----------------------------------------------+
 ```
 
 ### Sidebar inputs
 
-- **Narrative textbox** — paste or type the forecast story. Defaults
+- **Forecast narrative** — paste or type the forecast story. Defaults
   to the canonical sticky-services-inflation example. The LLM uses
   this verbatim as the narrative passed to `propose_adjustments()`.
 
-- **Refinement iterations** — `max_iters` for the agentic loop
-  (default 3 = one propose + up to two refinements). Set to 1 for
-  the cheapest "propose-only" mode.
+- **Iterations** — `max_iters` for the agentic loop. Defaults to
+  **1 (fast)** for a single propose + solve + describe + audit pass
+  (~60s). Bump to 2 or 3 to enable the refinement loop, which
+  re-prompts the LLM to revise its proposal when the audit
+  disagrees.
 
 - **Propose model** — Sonnet 4.6 (default) or Haiku 4.5. Sonnet is
   more decisive at calibrating magnitudes and figuring out cancelling
@@ -76,17 +80,26 @@ SIBYL_NO_LAUNCH_BROWSER=1 just dashboard
   run on Haiku because they're cheap text tasks.
 
 - **Run round** — fires the propose / solve / describe / audit /
-  refine pipeline. A progress widget appears; the button doesn't
-  disable but a second click while running is harmless (Shiny
-  serialises observers).
+  refine pipeline. A Shiny progress widget appears in the
+  bottom-right corner of the browser. The sidebar **Status** panel
+  also updates: blue rule while running, green rule on success, red
+  rule on error.
 
 ### Tabs
 
-- **Chart** — Plotly facet of the seven headline aggregates
-  (Y, RC, GNE, LUR, PTM, P, NCR), baseline (grey) vs scenario
-  (blue), zoomed to 2018+. Hover for exact values. Below the
-  chart, a small table shows the diff at horizon end on each
-  variable.
+- **Chart** — at the top, a strip of seven headline KPIs showing the
+  scenario value at the horizon end + its delta vs baseline. Below
+  that, the radio toggle **Year-on-year change** (default) vs
+  **Levels**:
+  - YoY mode, level variables (Y, RC, GNE, PTM, P): % growth
+    versus the same quarter a year ago.
+  - YoY mode, rate variables (LUR): percentage-point change versus
+    a year ago.
+  - NCR is **always shown as a level** (a rate, not a change),
+    even when the toggle is on YoY.
+  Below the chart, a typed diff table shows baseline vs scenario at
+  the horizon end with correctly-formatted units (pp for rates, %
+  for levels).
 
 - **Proposed adjustments** — the structured add-factors the LLM
   produced. Columns: `equation`, `quarter`, `value`, `tail`,
@@ -100,23 +113,24 @@ SIBYL_NO_LAUNCH_BROWSER=1 just dashboard
   trivially satisfied. The describer only sees a diff-vs-baseline
   summary.
 
-- **Round-trip audit** — the claim-by-claim verdict
-  (agree / disagree / not_addressed). Below it, the diagnostics
-  table from `judgement::diagnose_audit()` classifies each
-  disagreement as either:
-  - `translation_gap` — LLM didn't deliver a claim's target.
-    The refinement loop should fix it.
-  - `model_response` — narrative said "no change" but MARTIN's
-    structure responded (Taylor Rule, Phillips curve, ...). The
-    forecaster needs to accept the trade-off or add a cancelling
-    AF on the responding equation.
-  - `not_addressed` — the describer didn't restate this claim
-    (often a causal/structural framing that doesn't appear in a
+- **Audit** — at the top a coloured **overall_match** badge
+  (green=agree / amber=partial / red=disagree). Then the
+  claim-by-claim verdict table with per-claim badges. Then the
+  diagnostics table from `judgement::diagnose_audit()` which
+  classifies each disagree as:
+  - `translation_gap` (red) — LLM didn't deliver a claim's target.
+    Iterate or revise.
+  - `model_response` (amber) — narrative said "no change" but
+    MARTIN's structure responded (Taylor Rule, Phillips curve, ...).
+    Accept the trade-off or add a cancelling AF on the responding
+    equation.
+  - `not_addressed` (grey) — the describer didn't restate this
+    claim (often a causal/structural framing absent from a
     numerical description).
 
-- **Iteration history** — one row per orchestrator iteration,
-  showing which equations were touched at each pass and the audit
-  verdict at each step. The row marked `*` is the iteration the
+- **History** — one row per orchestrator iteration. Each row shows
+  which equations were touched at that pass, the audit verdict
+  (badged), and a green **BEST** marker on the iteration the
   orchestrator picked as best (highest audit verdict, earliest on
   ties).
 
@@ -202,3 +216,29 @@ The dashboard runs a one-shot LLM round. It does NOT:
 
 For a full production round (fresh data + interactive approval +
 report rendering), use `just pipeline` followed by `just report`.
+
+## Visual design notes
+
+The dashboard ships with a custom theme tuned for analytical work:
+
+- **Palette** is ink-dark + warm paper, with a deep teal accent
+  for the scenario series and grey for the baseline. Status colours
+  follow agree=green, partial=amber, disagree=red.
+- **Typography** uses the system sans-serif stack
+  (`ui-sans-serif` -> `-apple-system` -> `Segoe UI` -> ...) so it
+  matches the host OS conventions, with serif Georgia for the
+  LLM's free-form description block (it reads more like a research
+  note that way).
+- **Tabular numbers** (`font-variant-numeric: tabular-nums`)
+  throughout the tables and KPI strip so digits align vertically.
+- **The header band** is fixed ink with a warm tan accent rule and
+  a monospaced metadata strip on the right (horizon, re-estimation
+  end, equation count).
+- **No external font / icon dependencies**: everything renders
+  offline from the host's system fonts. The dashboard works in an
+  airgapped environment provided the targets cache and
+  `ANTHROPIC_API_KEY` are available.
+
+All theme tokens are defined as CSS variables (`--sibyl-ink`,
+`--sibyl-paper`, etc.) at the top of `app/app.R`, so re-skinning is
+a single block of edits.
