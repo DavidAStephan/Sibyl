@@ -21,12 +21,13 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | 474 pass, 0 fail (~16 skip; live-API tests that need keys) |
-| Pipeline `tar_make()` (live default) | 19/19 targets, ~6m 50s cold (live data fetch dominates) |
+| Test suite | 539 pass, 0 fail (~10 skip; live-API tests that need keys) |
+| Pipeline `tar_make()` (live default) | 21/21 targets, ~8m cold (live data fetch + sensitivity matrix dominate) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
-| Live database vs fixture coverage | 100 % of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for long-history series) |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Pipeline includes (a) sensitivity matrix per equation, (b) iterative-refinement loop with best-iter selection, (c) Sonnet 4.6 for propose/refine + Haiku for describe/audit, (d) `diagnose_audit()` classifies each disagree claim as translation gap vs model response. LUR narrative reaches `partial` audit on iter 3 (Sonnet figures out NCR canceller). ~3m47s wall clock cold; sensitivity matrix is ~30s of that. |
-| Round report | renders to `reports/round.html`; includes a "narrative coherence diagnostics" section telling apart translation gaps from inevitable MARTIN endogenous responses |
+| Live database vs fixture coverage | 100 % of the fixture's 205 vars (live + dummies/scalars + fixture fallback for long-history series) |
+| Nowcast handover | bridge_monthly default (RC←RT, Y←HOURS, LE←LE); ARIMA fallback for unmapped targets |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Sensitivity matrix → propose (Sonnet 4.6) → solve → describe (Haiku) → audit (Haiku) → refine if disagree, repeat; best-iter selection. `diagnose_audit()` separates translation gaps from inevitable MARTIN endogenous responses. Multi-narrative coherence test confirms distinct equations per narrative. |
+| Round report | renders to `reports/round.html` including "narrative coherence diagnostics" |
 
 ---
 
@@ -91,75 +92,66 @@ if Quarto isn't on PATH.
 Ranked by leverage. Each item is independent — pick whichever you have
 appetite for.
 
-### 1. RSTAR full-port accuracy (~½–1 session)
+### 1. Joint MLE for state-space trends (~1 session)
 
-`fit_rstar_kfas_full` is **stable** on live data (fixed-prior
-structural params via `RSTAR_FULL_PARAMS` produce live values in the
-plausible [-0.004, 4.805] range), but **accuracy** vs fixture is
-mediocre (cor ~ 0.30) — the smoothed nrate state doesn't track the
-fixture's RSTAR closely. The simple smoother (`fit_rstar_kfas`,
-cor ~ 0.96) remains the default.
+The previous session's six work items took out HP-filter initial
+states + the stronger Okun coefficient on `fit_rstar_kfas_full`. The
+remaining lever — and the biggest expected accuracy win — is **joint
+MLE**: a custom `optim()` likelihood that varies *both* structural
+parameters and variances together.
 
-Paths to improve full-port accuracy:
+Current state of accuracy vs fixture:
 
-- **Joint MLE**: custom `optim()` likelihood that estimates structural
-  + variance params jointly (currently the two-step OLS-pre-est +
-  fitSSM-on-variances structure leaves structural params at OLS values
-  that don't co-optimize with the smoother).
-- **Better initial states**: replace the centred-MA proxies with
-  actual HP filter (lambda=1600). KFAS's `SSMtrend(degree=2)` with
-  the right Q reproduces HP exactly.
-- **Stronger Okun coefficient**: beta_1 = -0.3 may be too weak; try
-  beta_1 = -0.5 to disentangle ygap from NAIRU more sharply.
+| Estimator | cor | bias | notes |
+|---|---|---|---|
+| `fit_rstar_kfas` (simple smoother) | 0.97 | small | default; only RSTAR exposed |
+| `fit_rstar_kfas_full` | 0.33 | mediocre | exposes YGAP/YPOT/G/Z but smoothed nrate poor |
+| `fit_pie_kfas` (faithful 2-state) | 0.93 | -0.32pp | strong; bias likely OK |
+| `fit_nairu_kfas` (faithful) | 0.73 | +1.10pp | weaker; bias is the main gap |
 
-Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
-auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
-expose.
+For each, the OLS-pre-est step pins the structural params; only
+variances enter `fitSSM`. Joint MLE would let `optim()` co-optimize
+the most economically meaningful structural params (alpha_1, alpha_3,
+beta_1 for RSTAR; gamma_1, gamma_2 for PI_E/TLUR) with the variances,
+which previously gave the biggest fidelity gains in rstar.prg's own
+EViews implementation.
 
-### 2. Faithful state-space accuracy across PI_E / TLUR / RSTAR (~1 session)
+Tricky bits to handle:
 
-The faithful PI_E and TLUR ports trade a few correlation points
-against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
-TLUR cor ~ 0.8 vs the v0's simpler structures at ~0.9). If accuracy
-is the priority, the OLS-pre-est step can be replaced with
-EViews-published parameter values (when available) or with joint MLE
-across all three trends.
+- KFAS's `update_fn` mutates `model` per iteration. Modifying T_arr
+  in place (for time-varying structural T) is fine; modifying the
+  Z matrix takes a single assignment.
+- Bounded params need a logit-style transform so optim() can roam
+  unconstrained: e.g. `alpha_1 = 1.5 * plogis(p)` to keep it in [0, 1.5].
+- 11+ free params is identifiability-risky on quarterly data;
+  consider 5-7 (variances + 2-3 most sensitive structural params).
 
-### 3. Nowcast bridges into the pipeline default (~¼ session)
+### 2. Trading-partner-weighted world variables (~½ session)
 
-`nowcast::nowcast_handover(method = "bridge_monthly", ...)` works and
-the live demo (`scripts/monthly_bridge_demo.R`) shows it lifts
-consumption nowcasts +7.4% and GDP +4-5% above ARIMA. But `_targets.R`
-still uses the ARIMA default. Switch the handover target to bridge
-when monthly indicators are fresher than quarterly ones (or just
-always — bridge falls back to ARIMA gracefully when no indicator data
-is mapped).
+`fetch_oecd()` now exists as a single-series SDMX fetcher. The follow-
+up is the proper TPW build:
 
-### 4. Catalogue gap items (~¼ session)
+1. Fetch OECD QNA quarterly real GDP / CPI / export-price for
+   Australia's top trading partners (CN, JP, US, KR, SG, IN, NZ, GB,
+   DE, TH — covers ~85% of two-way trade).
+2. Source partner export-share weights from ABS table 5368.0
+   (`Exports of goods and services, country and country groups`).
+3. Compute `WY = sum_i weight_i(t) * real_GDP_i(t) / real_GDP_i(t0)`
+   (and analogous for WP, WPX) — possibly with rolling weights
+   averaged over 3-5 years to match what the RBA publishes.
+4. Catalogue rows for WY/WP/WPX flip `source` from `fred` to `oecd`
+   plus a new derived layer to do the weighting.
 
-A handful of derived rows still can't materialise because their
-inputs aren't in the catalogue:
+The current FRED US proxies aren't *wrong* — the US is a third of
+TPW trade weight — but they fail when narratives reference partners
+the US doesn't track (e.g. Chinese slowdown).
 
-- **`LURGAP`** — needs `TLUR` catalogued (it's currently produced by
-  the state-space layer but isn't a catalogue row). Set formula
-  `LUR - TLUR` once `TLUR` is in.
-- **`NBRSP`** — needs `NBR` (now coming from the splice handler).
-  Derived formula `NBR - NCR` should work; just add the catalogue row.
-- **`PAE`** — needs `LHPP` (hours per person). Legacy code computes
-  `hours / le * 3` then `lhpp_hist = hours_hist / le_hist` backcast.
+### 3. Joint-MLE-RSTAR variant validation (~¼ session)
 
-### 5. `fetch_oecd` for trading-partner-weighted world variables (~½ session)
-
-WY / WP / WPX currently use FRED US proxies. Real OECD trading-partner
-weights would be cleaner. Lowest priority — proxies work.
-
-### 6. Multi-round narrative coherence test (~¼ session)
-
-Run three different narratives back-to-back through the pipeline
-(sticky inflation, labour-market gap, capex slowdown) and confirm that
-(a) the LLM picks distinct equations per narrative, (b) the round
-reports are visually distinguishable, (c) the round-trip audits don't
-falsely cross-contaminate. Confidence-building rather than feature work.
+Once joint MLE lands (item 1), confirm the full-port RSTAR's auxiliary
+states (YGAP, YPOT, G, Z) are also better-tracked, not just RSTAR
+itself. Re-run `scripts/lur_gap_walkthrough.R` and the multi-narrative
+test — if YGAP is more stable, the AF channels through more cleanly.
 
 ---
 
@@ -171,11 +163,12 @@ packages/
 │   ├── R/
 │   │   ├── catalogue.R          ← series_catalogue() accessor
 │   │   ├── update_data.R        ← update_data() + to_martin_database()
-│   │   ├── fetch_*.R            ← live FRED / RBA / ABS / WB / BoM
+│   │   ├── fetch_*.R            ← live FRED / RBA / ABS / OECD / WB / BoM
 │   │   ├── transformations.R    ← level_from_pct / splices / chowlin / PIM
 │   │   ├── derived.R            ← evaluate_derived_formula
 │   │   ├── identities.R         ← apply_ibctr() / apply_ibndr_annual()
-│   │   ├── state_space.R        ← KFAS ports of PI_E, TLUR, RSTAR, TDLLA, ...
+│   │   ├── monthly_indicators.R ← nowcast_monthly_indicators() for bridges
+│   │   ├── state_space.R        ← KFAS ports of PI_E, TLUR, RSTAR + hp_filter
 │   │   ├── extend_exogenous.R   ← future-horizon exogenous extension
 │   │   └── cache.R              ← parquet cache by (source, vintage)
 │   └── inst/extdata/
@@ -221,9 +214,10 @@ scripts/
 ├── live_integration_smoke.R     ← end-to-end live-data smoke
 ├── lur_gap_walkthrough.R        ← manual AF demo (LUR -1.6pp closes the gap)
 ├── end_to_end_round_walkthrough.R  ← manual round demo
-└── monthly_bridge_demo.R        ← bridge vs ARIMA comparison
+├── monthly_bridge_demo.R        ← bridge vs ARIMA comparison
+└── multi_narrative_coherence_check.R  ← 3-narrative LLM coherence probe
 
-_targets.R                       ← end-to-end pipeline (19 targets)
+_targets.R                       ← end-to-end pipeline (21 targets)
 reports/round.qmd                ← Quarto round report
 DESIGN.md                        ← longer architectural story
 CLAUDE.md                        ← context for sessions
@@ -317,17 +311,31 @@ For canonical history use `git log`. Major landed workstreams:
   - V0 KFAS ports of pistar.prg / nairu.prg / rstar.prg / supply_side.prg.
   - Faithful restorations: PI_E 2-state with AR(1) DL4PTM + GST dummies;
     TLUR with beta/phi/alpha cross-equation terms.
-  - `fit_rstar_kfas_full` stable but accuracy-improvement opportunity
-    (item 2 above).
+  - `fit_rstar_kfas_full` and `fit_nairu_kfas` use HP-filter
+    (lambda=1600) initial-state seeds; `fit_rstar_kfas_full` uses
+    Okun beta_1 = -0.5.
+  - `fit_rstar_kfas_full` accuracy remains modest (cor 0.33 vs
+    fixture's smoothed RSTAR); joint MLE is the next-tier improvement
+    (item 1 above).
 
 - **MARTIN solve / re-estimation:**
   - `solve_martin()` with frozen + reestimated coefficient paths
     (TSRANGE rewriter for arbitrary `estimation_end`).
   - 2025Q2 re-estimation closes the post-COVID gap on NCR/PTM/Y.
+  - `martin::sensitivity_matrix()` pre-solves a per-unit-type
+    calibration shock per equation and feeds the result to the LLM
+    propose prompt.
   - Regression test bit-identical to the canonical bimets pipeline.
 
 - **Nowcast handover:**
   - ARIMA/ETS default + monthly bridge equations
     (`method = "bridge_monthly"`).
-  - Bridge improves consumption/GDP nowcasts vs ARIMA (item 4 above
-    is the wiring into the default).
+  - Pipeline default is now `bridge_monthly` with the indicator map
+    `RC ← RT`, `Y ← HOURS`, `LE ← LE`; ARIMA fallback for unmapped
+    targets and fixture-mode runs.
+
+- **Data layer:**
+  - `fetch_oecd()` single-series SDMX fetcher; the trading-partner-
+    weighted aggregate computation (item 2) is the remaining piece.
+  - Catalogue derived rows for PAE, NBRSP, LURGAP have proper
+    formulas (`NHCOE / (LHPP * LE)`, `NBR - NCR`, `LUR - TLUR`).
