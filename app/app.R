@@ -492,6 +492,8 @@ chart_tab <- nav_panel(
   div(class = "sibyl-tab-content",
     # Headline KPI cards
     uiOutput("kpi_strip"),
+    # Exogenised-variables pill row (if any)
+    uiOutput("exogenize_strip"),
     # View controls
     fluidRow(
       column(8,
@@ -632,7 +634,7 @@ server <- function(input, output, session) {
                  message = "Running SIBYL round",
                  detail = "Propose -> solve -> describe -> audit")
 
-    solve_fn <- function(adj) {
+    solve_fn <- function(adj, exogenize = character(0)) {
       martin::solve_martin(
         database       = database_with_handover,
         adjustments    = adj,
@@ -640,7 +642,10 @@ server <- function(input, output, session) {
         coefficients   = if (is.null(estimation_end)) "frozen"
                          else "reestimated",
         estimation_end = estimation_end,
-        scenario       = "dashboard-run"
+        scenario       = "dashboard-run",
+        exogenize              = exogenize,
+        baseline_for_exogenize = if (length(exogenize) > 0L) baseline
+                                 else NULL
       )
     }
 
@@ -855,45 +860,90 @@ server <- function(input, output, session) {
     )
   })
 
+  # ----- Exogenize strip (Chart tab) -----
+  output$exogenize_strip <- renderUI({
+    res <- state$result
+    exog <- res$exogenize %||% character(0)
+    if (is.null(res) || length(exog) == 0L) return(NULL)
+    pills <- lapply(exog, function(v) {
+      label <- HEADLINE_LABELS[v] %||% v
+      tags$span(class = "sibyl-badge sibyl-badge-partial",
+                style = "margin-right: 8px;",
+                paste0(v, " held at baseline"))
+    })
+    div(style = "margin: 0 0 10px 0; padding: 8px 12px; background: rgba(176,122,0,0.05); border-left: 3px solid var(--sibyl-partial); border-radius: 0 4px 4px 0;",
+        tags$span(style = "font-size: 0.78rem; color: var(--sibyl-muted); margin-right: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;",
+                  "Exogenised:"),
+        pills)
+  })
+
   # ----- Adjustments -----
   output$adjustments_ui <- renderUI({
     res <- state$result
     if (is.null(res)) {
       return(div(class = "sibyl-empty", "Run a round to see proposed adjustments."))
     }
-    if (length(res$adjustments) == 0L) {
+    exog <- res$exogenize %||% character(0)
+    have_adj <- length(res$adjustments) > 0L
+    have_exog <- length(exog) > 0L
+    if (!have_adj && !have_exog) {
       return(div(class = "sibyl-empty",
-        "The LLM proposed no quantitative adjustments for this narrative."))
+        "The LLM proposed no adjustments and no exogenisations for this narrative."))
     }
-    tbl <- judgement::as_tibble_adjustments(res$adjustments) |>
-      dplyr::select(equation, quarter, value, tail, confidence,
-                    rationale, source) |>
-      dplyr::arrange(equation, quarter)
-    rows <- lapply(seq_len(nrow(tbl)), function(i) {
-      r <- tbl[i, ]
-      val_cls <- if (r$value > 1e-9) "num-pos"
-                 else if (r$value < -1e-9) "num-neg" else ""
-      tags$tr(
-        tags$td(class = "text", tags$b(r$equation)),
-        tags$td(r$quarter),
-        tags$td(class = val_cls, sprintf("%+.4f", r$value)),
-        tags$td(class = "text", r$tail),
-        tags$td(class = "text", r$confidence),
-        tags$td(class = "text",
-                style = "max-width: 480px; white-space: normal;",
-                r$rationale),
-        tags$td(class = "text",
-                tags$code(r$source))
+
+    exog_block <- if (have_exog) {
+      pills <- lapply(exog, function(v) {
+        label <- HEADLINE_LABELS[v] %||% v
+        tags$span(class = "sibyl-badge sibyl-badge-partial",
+                  style = "margin-right: 6px;",
+                  paste0(v, "  -  ", label))
+      })
+      tagList(
+        div(class = "sibyl-section-title",
+            "Exogenised variables (held at baseline path)"),
+        div(class = "sibyl-help-text",
+            "These variables' equations are switched off over the projection; ",
+            "their values are taken from the baseline solve. ",
+            "Use this when the narrative says a variable is unchanged."),
+        div(style = "margin-bottom: 18px;", pills)
       )
-    })
-    tags$table(class = "sibyl-table",
-      tags$thead(tags$tr(
-        tags$th("Equation"), tags$th("Quarter"), tags$th("Value"),
-        tags$th("Tail"), tags$th("Confidence"),
-        tags$th("Rationale"), tags$th("Source")
-      )),
-      tags$tbody(rows)
-    )
+    } else NULL
+
+    adj_block <- if (have_adj) {
+      tbl <- judgement::as_tibble_adjustments(res$adjustments) |>
+        dplyr::select(equation, quarter, value, tail, confidence,
+                      rationale, source) |>
+        dplyr::arrange(equation, quarter)
+      rows <- lapply(seq_len(nrow(tbl)), function(i) {
+        r <- tbl[i, ]
+        val_cls <- if (r$value > 1e-9) "num-pos"
+                   else if (r$value < -1e-9) "num-neg" else ""
+        tags$tr(
+          tags$td(class = "text", tags$b(r$equation)),
+          tags$td(r$quarter),
+          tags$td(class = val_cls, sprintf("%+.4f", r$value)),
+          tags$td(class = "text", r$tail),
+          tags$td(class = "text", r$confidence),
+          tags$td(class = "text",
+                  style = "max-width: 480px; white-space: normal;",
+                  r$rationale),
+          tags$td(class = "text", tags$code(r$source))
+        )
+      })
+      tagList(
+        div(class = "sibyl-section-title", "Add-factor adjustments"),
+        tags$table(class = "sibyl-table",
+          tags$thead(tags$tr(
+            tags$th("Equation"), tags$th("Quarter"), tags$th("Value"),
+            tags$th("Tail"), tags$th("Confidence"),
+            tags$th("Rationale"), tags$th("Source")
+          )),
+          tags$tbody(rows)
+        )
+      )
+    } else NULL
+
+    tagList(exog_block, adj_block)
   })
 
   # ----- Description -----

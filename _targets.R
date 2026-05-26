@@ -34,6 +34,8 @@ for (pkg in c("packages/judgement", "packages/martin",
   if (dir.exists(pkg)) try(pkgload::load_all(pkg, quiet = TRUE), silent = TRUE)
 }
 
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
 # Helper: synthesise a ragged-edge database from a "complete" fixture so
 # nowcast has something to do. Drops the last `n_chop` quarters from each
 # handover variable; leaves non-handover series intact.
@@ -237,7 +239,7 @@ list(
   # ---------------------------------------------------------------------------
   tar_target(refined_round,
     if (nzchar(Sys.getenv("ANTHROPIC_API_KEY"))) {
-      solve_fn <- function(adj) {
+      solve_fn <- function(adj, exogenize = character(0)) {
         martin::solve_martin(
           database       = database_with_handover,
           adjustments    = adj,
@@ -245,7 +247,10 @@ list(
           coefficients   = if (is.null(estimation_end)) "frozen"
                            else "reestimated",
           estimation_end = estimation_end,
-          scenario       = "refinement-iter"
+          scenario       = "refinement-iter",
+          exogenize              = exogenize,
+          baseline_for_exogenize = if (length(exogenize) > 0L) baseline
+                                   else NULL
         )
       }
       judgement::propose_with_refinement(
@@ -287,14 +292,21 @@ list(
   # 7. MARTIN solve with approved adjustments
   # ---------------------------------------------------------------------------
   tar_target(projection,
-    martin::solve_martin(
-      database       = database_with_handover,
-      adjustments    = approved_adjustments,
-      horizon        = horizon,
-      coefficients   = if (is.null(estimation_end)) "frozen" else "reestimated",
-      estimation_end = estimation_end,
-      scenario       = "with_adjustments"
-    )
+    {
+      exogenize <- attr(approved_adjustments, "exogenize") %||% character(0)
+      martin::solve_martin(
+        database       = database_with_handover,
+        adjustments    = approved_adjustments,
+        horizon        = horizon,
+        coefficients   = if (is.null(estimation_end)) "frozen"
+                         else "reestimated",
+        estimation_end = estimation_end,
+        scenario       = "with_adjustments",
+        exogenize              = exogenize,
+        baseline_for_exogenize = if (length(exogenize) > 0L) baseline
+                                 else NULL
+      )
+    }
   ),
 
   # ---------------------------------------------------------------------------

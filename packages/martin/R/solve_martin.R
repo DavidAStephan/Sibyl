@@ -55,6 +55,9 @@ solve_martin <- function(database,
                          coefficients    = c("frozen", "reestimated"),
                          estimation_end  = NULL,
                          scenario        = "baseline",
+                         exogenize       = character(0),
+                         baseline_for_exogenize = NULL,
+                         exogenize_range = NULL,
                          sim_convergence = 1e-6,
                          sim_iter_limit  = 100) {
   coefficients <- match.arg(coefficients)
@@ -72,6 +75,33 @@ solve_martin <- function(database,
   if (!inherits(adjustments, "adjustment_list")) {
     stop("`adjustments` must be a judgement::adjustment_list or NULL.",
          call. = FALSE)
+  }
+  if (length(exogenize) > 0L) {
+    if (is.null(baseline_for_exogenize)) {
+      stop("`exogenize` requires `baseline_for_exogenize` ",
+           "(a baseline projection tibble whose values will be used as ",
+           "the exogenous path).", call. = FALSE)
+    }
+    if (!is.data.frame(baseline_for_exogenize) ||
+        !all(c("variable", "quarter", "value") %in%
+             names(baseline_for_exogenize))) {
+      stop("`baseline_for_exogenize` must be a tibble with columns ",
+           "(variable, quarter, value).", call. = FALSE)
+    }
+  }
+
+  # Splice the baseline path into the database for any exogenised variable
+  # over the exogenisation range. This is what bimets's Exogenize reads
+  # back: it uses the database values for exogenised vars in lieu of
+  # iterating their equations.
+  if (length(exogenize) > 0L) {
+    if (is.null(exogenize_range)) exogenize_range <- horizon
+    ex_start <- judgement_parse_quarter(exogenize_range[1])
+    ex_end   <- judgement_parse_quarter(exogenize_range[2])
+    database <- splice_exogenize_baseline(
+      database, baseline_for_exogenize, exogenize,
+      ex_start, ex_end
+    )
   }
 
   model <- load_martin(
@@ -94,11 +124,27 @@ solve_martin <- function(database,
   user_expanded <- judgement::expand_adjustments(adjustments, horizon)
   afs <- inject_user_adjustments(replay_afs, user_expanded)
 
+  # Build bimets's Exogenize list: each entry is c(start_year, start_q,
+  # end_year, end_q) for the period during which that variable is held
+  # to the database's (now-baseline-spliced) values.
+  exogenize_list <- NULL
+  if (length(exogenize) > 0L) {
+    if (is.null(exogenize_range)) exogenize_range <- horizon
+    ex_start <- judgement_parse_quarter(exogenize_range[1])
+    ex_end   <- judgement_parse_quarter(exogenize_range[2])
+    exogenize_list <- stats::setNames(
+      lapply(exogenize, function(v) c(ex_start$year, ex_start$quarter,
+                                       ex_end$year, ex_end$quarter)),
+      exogenize
+    )
+  }
+
   .suppress_bimets_version_warning({
     model <- bimets::SIMULATE(
       model,
       TSRANGE            = tsrange,
       ConstantAdjustment = afs,
+      Exogenize          = exogenize_list,
       simConvergence     = sim_convergence,
       simIterLimit       = sim_iter_limit
     )
@@ -107,6 +153,7 @@ solve_martin <- function(database,
   out <- simulation_to_tibble(model, scenario = scenario)
   attr(out, "horizon")     <- horizon
   attr(out, "adjustments") <- adjustments
+  attr(out, "exogenize")   <- exogenize
   attr(out, "scenario")    <- scenario
   out
 }
@@ -193,5 +240,71 @@ simulation_to_tibble <- function(model, scenario = "baseline") {
     )
   })
   dplyr::bind_rows(rows)
+}
+
+# Overwrite each exogenised variable's bimets ts with the corresponding
+# baseline-projection values over [ex_start, ex_end]. Cells outside that
+# range, and variables not in `exogenize`, are left untouched.
+#
+# Why this is needed: bimets' Exogenize argument doesn't take a path —
+# it tells SIMULATE to use the database's existing values for those
+# variables instead of iterating their equations. To "hold X at
+# baseline" we have to put the baseline values *into* the database
+# first.
+splice_exogenize_baseline <- function(database, baseline, exogenize,
+                                      ex_start, ex_end) {
+  ex_lookup <- split(baseline, baseline$variable)
+  for (v in exogenize) {
+    ts <- database[[v]]
+    if (is.null(ts)) {
+      stop(sprintf("Cannot exogenise '%s': not in database.", v),
+           call. = FALSE)
+    }
+    base_v <- ex_lookup[[v]]
+    if (is.null(base_v) || nrow(base_v) == 0L) {
+      stop(sprintf("Cannot exogenise '%s': no baseline values supplied.",
+                   v), call. = FALSE)
+    }
+    base_v <- base_v[order(base_v$quarter), , drop = FALSE]
+    ex_start_dec <- ex_start$year + (ex_start$quarter - 1) / 4
+    ex_end_dec   <- ex_end$year   + (ex_end$quarter   - 1) / 4
+
+    tsp <- stats::tsp(ts)
+    ts_start_year <- floor(tsp[1] + 1e-9)
+    ts_start_q    <- round((tsp[1] - ts_start_year) * 4 + 1)
+    vals <- as.numeric(ts)
+    # Extend ts forward if it ends before ex_end (carry-forward seed).
+    cur_end_dec <- tsp[2]
+    if (cur_end_dec < ex_end_dec - 1e-9) {
+      n_pad <- round((ex_end_dec - cur_end_dec) * 4)
+      last_v <- tail(vals[is.finite(vals)], 1)
+      if (length(last_v) == 0L) last_v <- 0
+      vals <- c(vals, rep(last_v, n_pad))
+    }
+    # Index each cell by yyyyQq.
+    n <- length(vals)
+    cell_labels <- vapply(seq_len(n), function(i) {
+      abs_q <- ts_start_year * 4L + (ts_start_q - 1L) + (i - 1L)
+      sprintf("%04dQ%d", abs_q %/% 4L, (abs_q %% 4L) + 1L)
+    }, character(1))
+    base_by_q <- stats::setNames(base_v$value, base_v$quarter)
+
+    # Identify which cells fall inside the exogenisation window.
+    in_window <- vapply(seq_len(n), function(i) {
+      abs_q <- ts_start_year * 4L + (ts_start_q - 1L) + (i - 1L)
+      dec <- abs_q %/% 4L + ((abs_q %% 4L)) / 4
+      dec >= ex_start_dec - 1e-9 & dec <= ex_end_dec + 1e-9
+    }, logical(1))
+
+    for (i in which(in_window)) {
+      bv <- base_by_q[[cell_labels[i]]]
+      if (!is.null(bv) && is.finite(bv)) vals[i] <- bv
+    }
+
+    database[[v]] <- bimets::TIMESERIES(
+      vals, START = c(ts_start_year, ts_start_q), FREQ = 4
+    )
+  }
+  database
 }
 

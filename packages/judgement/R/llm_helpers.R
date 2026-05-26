@@ -73,6 +73,20 @@ proposal_schema <- function() {
         "List of proposed adjustments. Use an empty array if the narrative",
         "does not imply any specific quantitative adjustments."
       )
+    ),
+    exogenize = ellmer::type_array(
+      items = ellmer::type_string(
+        "MARTIN variable code (e.g. 'NCR', 'P') to hold at baseline."
+      ),
+      description = paste(
+        "Variables to exogenise: lock at their baseline values for the",
+        "whole projection. Use this when the narrative says a variable",
+        "is unchanged from baseline (e.g. 'no change to the cash-rate",
+        "path'). Exogenising is structurally cleaner than adding a",
+        "cancelling AF because it switches off that variable's equation",
+        "entirely, so no endogenous response can fight your narrative.",
+        "Return an empty array if the narrative doesn't pin any variable."
+      )
     )
   )
 }
@@ -187,6 +201,23 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "  7. Prefer fewer, targeted adjustments over many small ones.",
     "  8. If the narrative is silent on quantitative changes, return an empty",
     "     adjustments array.",
+    "  9. EXOGENISE rather than cancel. When the narrative says a variable",
+    "     is 'unchanged from baseline' or 'held at the baseline path'",
+    "     (commonly the cash rate or an inflation expectation), put that",
+    "     variable's MARTIN code into the top-level `exogenize` array.",
+    "     Exogenisation switches off that variable's equation for the",
+    "     projection -- the model uses baseline values directly. This is",
+    "     structurally cleaner than adding a cancelling add-factor on the",
+    "     same equation: cancellers tend to over-correct (you size them",
+    "     against a guess of the endogenous response), whereas exogenising",
+    "     guarantees zero deviation from baseline. Typical use:",
+    "       narrative: 'no change to the cash-rate path'",
+    "         -> exogenize: ['NCR'],  no adjustments on NCR.",
+    "       narrative: 'inflation expectations stay anchored at baseline'",
+    "         -> exogenize: ['PI_E'].",
+    "     Do NOT exogenise a variable AND put an AF on it -- the AF would",
+    "     be ignored. Do NOT exogenise the *target* of your narrative",
+    "     (e.g. don't exogenise LUR if the narrative is about LUR).",
     "",
     "MARTIN equation catalogue (adjustable equations only):",
     "",

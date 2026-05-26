@@ -326,7 +326,7 @@ test_that("propose_with_refinement() stops at iter 1 when audit already agrees",
     structured_queue = list(initial_response, audit_agree),
     free_queue       = c("LUR fell by 0.20pp")
   )
-  solve_fn <- function(adj) {
+  solve_fn <- function(adj, exogenize = character(0)) {
     tibble::tibble(variable = "LUR",
                    quarter  = c("2024Q1", "2024Q2"),
                    value    = c(4.10, 4.10),
@@ -373,7 +373,7 @@ test_that("propose_with_refinement() iterates when audit disagrees", {
     free_queue = c("LUR fell by 0.05pp (undershoot)",
                    "LUR fell by 0.20pp (matches narrative)")
   )
-  solve_fn <- function(adj) {
+  solve_fn <- function(adj, exogenize = character(0)) {
     # Return projection magnitude proportional to the AF values, so the
     # refined (doubled) AF produces a bigger effect than the initial.
     multiplier <- mean(adj[[1]]$value)
@@ -426,7 +426,7 @@ test_that("propose_with_refinement() respects max_iters cap", {
     ),
     free_queue = c("descr 1", "descr 2")
   )
-  solve_fn <- function(adj) {
+  solve_fn <- function(adj, exogenize = character(0)) {
     tibble::tibble(variable = "LUR",
                    quarter  = c("2024Q1", "2024Q2"),
                    value    = c(4.2, 4.2), scenario = "scenario")
@@ -468,7 +468,7 @@ test_that("propose_with_refinement() keeps the best iteration when LLM over-corr
     ),
     free_queue = c("descr 1 good", "descr 2 over-corrected")
   )
-  solve_fn <- function(adj) {
+  solve_fn <- function(adj, exogenize = character(0)) {
     tibble::tibble(variable = "LUR", quarter = c("2024Q1", "2024Q2"),
                    value = c(4.2, 4.2), scenario = "scenario")
   }
@@ -487,7 +487,7 @@ test_that("propose_with_refinement() exits early on empty initial proposal", {
   empty_response <- list(reasoning = "narrative is qualitative",
                          adjustments = list())
   chat <- fake_chat_queue(structured_queue = list(empty_response))
-  solve_fn <- function(adj) stop("solve_fn should not be called")
+  solve_fn <- function(adj, exogenize = character(0)) stop("solve_fn should not be called")
   out <- propose_with_refinement(
     narrative = "Things look fine.", baseline = baseline_fixture(),
     solve_fn = solve_fn, max_iters = 3L, chat = chat

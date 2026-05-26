@@ -73,13 +73,19 @@ propose_adjustments <- function(narrative,
 
 # Shared parser for chat_structured() results returning a `proposal_schema()`
 # shape. Handles the empty-adjustments case + the tibble-vs-list normalisation
-# ellmer does, then maps each row to an adjustment().
+# ellmer does, then maps each row to an adjustment(). The proposal's
+# `exogenize` list (variables the LLM wants held at baseline) is attached
+# as the `"exogenize"` attribute on the returned adjustment_list.
 parse_proposal_result <- function(result, round_id, owner, source) {
+  exogenize <- extract_exogenize(result)
+
   if (is.null(result$adjustments) ||
       (is.data.frame(result$adjustments) && nrow(result$adjustments) == 0L) ||
       (!is.data.frame(result$adjustments) &&
        length(result$adjustments) == 0L)) {
-    return(adjustment_list())
+    out <- adjustment_list()
+    attr(out, "exogenize") <- exogenize
+    return(out)
   }
 
   proposals <- if (is.data.frame(result$adjustments)) {
@@ -95,7 +101,24 @@ parse_proposal_result <- function(result, round_id, owner, source) {
     parse_proposal_to_adjustment(p, round_id = round_id, owner = owner,
                                  source = source)
   })
-  do.call(adjustment_list, parsed)
+  out <- do.call(adjustment_list, parsed)
+  attr(out, "exogenize") <- exogenize
+  out
+}
+
+# Extract the `exogenize` character vector from a chat_structured() result.
+# ellmer may return the array as either a list/character vector or (when
+# items are simple strings) a base atomic vector.
+extract_exogenize <- function(result) {
+  ex <- result$exogenize
+  if (is.null(ex) || (is.list(ex) && length(ex) == 0L) ||
+      (is.atomic(ex) && length(ex) == 0L)) {
+    return(character(0))
+  }
+  if (is.list(ex)) ex <- vapply(ex, as.character, character(1))
+  ex <- as.character(ex)
+  ex <- ex[nzchar(ex) & !is.na(ex)]
+  unique(ex)
 }
 
 #' Refine an adjustment proposal using audit feedback
@@ -291,14 +314,16 @@ propose_with_refinement <- function(narrative,
   )
 
   for (iter in seq_len(as.integer(max_iters))) {
-    if (length(adjustments) == 0L) {
+    exogenize <- attr(adjustments, "exogenize") %||% character(0)
+    if (length(adjustments) == 0L && length(exogenize) == 0L) {
       history[[iter]] <- list(
         iteration = iter, adjustments = adjustments,
-        projection = NULL, description = NULL, audit = NULL
+        exogenize = exogenize, projection = NULL,
+        description = NULL, audit = NULL
       )
       break
     }
-    projection <- solve_fn(adjustments)
+    projection <- solve_fn(adjustments, exogenize = exogenize)
     description <- describe_projection(
       projection = projection, baseline = baseline,
       model = model_describe, chat = chat
@@ -309,7 +334,8 @@ propose_with_refinement <- function(narrative,
     )
     history[[iter]] <- list(
       iteration = iter, adjustments = adjustments,
-      projection = projection, description = description, audit = audit
+      exogenize = exogenize, projection = projection,
+      description = description, audit = audit
     )
 
     if (!isTRUE(attr(audit, "overall_match") == "agree") &&
@@ -341,6 +367,7 @@ propose_with_refinement <- function(narrative,
   best <- history[[best_idx]]
   list(
     adjustments = best$adjustments,
+    exogenize   = best$exogenize,
     projection  = best$projection,
     description = best$description,
     audit       = best$audit,
