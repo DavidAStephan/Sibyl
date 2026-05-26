@@ -129,15 +129,54 @@ list(
     }
   ),
 
+  # The raw panel (tidy (series_id, source, date, value, vintage)) is
+  # held separately from the bimets database so the monthly-indicator
+  # bridge in step 3 can use un-aggregated monthly observations.
+  # Re-runs update_data() (cached by sibyldata's parquet store), so
+  # cold cost is ~10 min but only the first time per vintage.
+  tar_target(raw_panel,
+    if (data_source == "fixture") {
+      NULL
+    } else {
+      sibyldata::update_data(sources = "all")
+    }
+  ),
+
   # Synthesise a ragged edge so nowcast has work to do; matches what
   # production looks like the moment after data refresh.
   tar_target(ragged_database, chop_for_ragged_edge(raw_database, n_chop = 2L)),
 
   # ---------------------------------------------------------------------------
-  # 3. Nowcast — bridge the missing quarters
+  # 3. Nowcast — bridge the missing quarters using monthly indicators
+  #    (`bridge_monthly`) where available, falling back to ARIMA otherwise.
+  #    Bridge regressions:
+  #      RC <- RT      (retail trade  -> household consumption)
+  #      Y  <- HOURS   (hours worked  -> real GDP)
+  #      LE <- LE_M    (LFS monthly LE -> quarterly LE; trivial bridge)
   # ---------------------------------------------------------------------------
+  tar_target(monthly_indicators,
+    if (is.null(raw_panel)) {
+      list()  # fixture mode: no monthly indicators available
+    } else {
+      sibyldata::nowcast_monthly_indicators(
+        raw  = raw_panel,
+        vars = c("RT", "HOURS", "LE")
+      )
+    }
+  ),
+
   tar_target(handover_forecasts,
-    nowcast::nowcast_handover(ragged_database, h = 2L, method = "arima")
+    if (length(monthly_indicators) == 0L) {
+      # Fixture mode or no monthly data: fall back to ARIMA.
+      nowcast::nowcast_handover(ragged_database, h = 2L, method = "arima")
+    } else {
+      nowcast::nowcast_handover(
+        ragged_database, h = 2L,
+        method             = "bridge_monthly",
+        bridge_indicators  = list(RC = "RT", Y = "HOURS", LE = "LE"),
+        monthly_indicators = monthly_indicators
+      )
+    }
   ),
 
   tar_target(database_with_handover,
