@@ -15,18 +15,7 @@
 
 # fetch_rba() lives in fetch_rba.R
 
-#' Stub fetcher for OECD series
-#'
-#' MARTIN's world variables presently use US FRED proxies (per the README of
-#' references/MARTIN-master). When we shift to major-trading-partner-weighted
-#' aggregates, OECD will be the source.
-#'
-#' @keywords internal
-fetch_oecd <- function(series_ids, vintage) {
-  stop("fetch_oecd() is not yet implemented. ",
-       "v0 uses FRED US-proxy series instead; see DESIGN.md.",
-       call. = FALSE)
-}
+# fetch_oecd() lives in fetch_oecd.R
 
 # fetch_worldbank() lives in fetch_worldbank.R
 
