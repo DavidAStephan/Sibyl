@@ -2,32 +2,31 @@
 
 Orientation for the next session. Read [CLAUDE.md](CLAUDE.md) for the
 architectural rules of engagement and [DESIGN.md](DESIGN.md) for the
-longer story; this file is just the operating cheat-sheet and TODO list.
+longer story; this file is the operating cheat-sheet plus the active
+TODO list.
 
 ---
 
 ## Where we left off
 
-**SIBYL is a working end-to-end pipeline.** Live data flows from
-FRED + RBA + ABS + WorldBank + BoM into `sibyldata`, gets pivoted /
-spliced / Chow-Lin'd / formula-derived into a MARTIN-shape database,
-solved by `martin::solve_martin()` against the vendored bimets model,
-optionally adjusted by an LLM via `judgement`, and rendered as a
-Quarto report.
+**SIBYL is a working end-to-end pipeline with a fully agentic LLM round.**
+Live data flows from FRED + RBA + ABS + WorldBank + BoM into `sibyldata`,
+gets pivoted / spliced / Chow-Lin'd / formula-derived into a MARTIN-shape
+database, solved by `martin::solve_martin()` against the vendored bimets
+model, adjusted by the LLM judgement layer with a pre-computed
+sensitivity matrix + iterative refinement loop + round-trip audit, and
+rendered as a Quarto report.
 
 Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | **455 pass, 0 fail, 15 skip** across the 4 packages |
-| Pipeline `tar_make()` (live default) | 15/15 targets, ~6m 50s cold (live data fetch dominates) |
+| Test suite | 458 pass, 0 fail (~16 skip; live-API tests that need keys) |
+| Pipeline `tar_make()` (live default) | 19/19 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
-| Live database vs fixture coverage | `raw_database` has 248 vars after merge; covers **100 %** of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for the long-history series) |
+| Live database vs fixture coverage | 100 % of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for long-history series) |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Pipeline includes (a) sensitivity matrix per equation, (b) iterative-refinement loop, (c) best-iter selection. LUR narrative hits magnitude target on iter 1 (LUR -1.28pp realised vs -1.5pp narrative). ~1m32s wall clock cold; ~30s of that is the sensitivity matrix build |
 | Round report | renders to `reports/round.html` |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | 19/19 targets succeed. Pipeline includes (a) a pre-computed sensitivity matrix per equation, (b) the iterative-refinement loop, (c) best-iter selection. LUR-narrative round now hits the magnitude target on iter 1 (LUR -1.28pp realised vs -1.5pp narrative) with the LLM correctly picking LUR over TLUR. ~1m32s wall clock cold (Haiku throughout; sensitivity build is ~30s of that). |
-
-The 15 skips are all intentional — live-API tests that require keys
-(FRED_API_KEY, ANTHROPIC_API_KEY) that aren't required for CI.
 
 ---
 
@@ -36,23 +35,12 @@ The 15 skips are all intentional — live-API tests that require keys
 From the project root:
 
 ```sh
-# One-shot setup after fresh clone — bootstraps renv + installs deps
-just init
-
-# Run all package tests
-just test
-
-# Test just one package (faster)
-just test-one sibyldata     # or martin / judgement / nowcast
-
-# Run the full targets pipeline
-just pipeline               # = Rscript -e 'targets::tar_make()'
-
-# Render the report after the pipeline runs
-just report
-
-# Visualise the pipeline DAG
-just pipeline-graph
+just init                       # one-shot bootstrap after fresh clone
+just test                       # all package tests
+just test-one judgement         # one package
+just pipeline                   # tar_make()
+just report                     # render reports/round.qmd
+just pipeline-graph             # DAG visualisation
 ```
 
 Quick test from R:
@@ -66,18 +54,12 @@ suppressPackageStartupMessages({
 devtools::test("packages/sibyldata")
 ```
 
-### Live-data smoke (5 min)
-
-[scripts/live_integration_smoke.R](scripts/live_integration_smoke.R) is
-the canonical end-to-end check against real ABS / RBA / FRED:
+Live-data smoke (5 min):
 
 ```sh
 FRED_API_KEY=... Rscript scripts/live_integration_smoke.R
-# Report lands at scripts/output/live_integration_report.txt
+# Report at scripts/output/live_integration_report.txt
 ```
-
-Most of the 5 minutes is ABS downloads (cached after the first hit per
-vintage).
 
 ---
 
@@ -86,228 +68,73 @@ vintage).
 | Key | Used by | Required for |
 |---|---|---|
 | `FRED_API_KEY` | `sibyldata::fetch_fred()` | live FRED fetches + 2 sibyldata tests |
-| `ANTHROPIC_API_KEY` | `judgement` LLM functions | live LLM round-trip + 3 judgement tests |
-| `QUANDL_API_KEY` | (legacy, deprecated; readrba replaces it) | nothing — safe to leave unset |
+| `ANTHROPIC_API_KEY` | `judgement` LLM functions | live LLM round + 3 judgement tests |
 
-Keys live in `.Renviron` (gitignored). See [.Renviron.example](.Renviron.example)
-for the template. R reads `.Renviron` automatically at session start.
-
-If you don't have keys, *everything still works* — affected tests skip,
-and `propose_adjustments()` falls back to an empty `adjustment_list()`
+Keys live in `.Renviron` (gitignored). See `.Renviron.example`. If you
+don't have keys, *everything still works* — affected tests skip, and
+`propose_with_refinement()` falls back to an empty `adjustment_list()`
 in `_targets.R` so the pipeline still completes.
 
----
-
-## Quarto
-
-A portable Quarto 1.6.43 was installed under `~/.local/quarto/`
-during the wiring session. Add to PATH for renders:
+Quarto 1.6.43 was installed under `~/.local/quarto/`. Add to PATH:
 
 ```sh
 export PATH="$HOME/.local/quarto/bin:$PATH"
 ```
 
-Or install system-wide with `brew install --cask quarto` (needs sudo).
-The pipeline's `round_report` target soft-skips with a one-line message
+Or `brew install --cask quarto`. The `round_report` target soft-skips
 if Quarto isn't on PATH.
 
 ---
 
 ## What to pick up next
 
-Ranked by leverage. Each item is independent — pick whichever you
-have appetite for.
+Ranked by leverage. Each item is independent — pick whichever you have
+appetite for.
 
-### 1. Validate the scale-aware system prompt — DONE
+### 1. Sensitivity-matrix follow-ups (~½ session)
 
-The first live LLM round (sticky-services narrative) miscalibrated
-PTM at value=0.1 per quarter, compounding prices +358%. The round-trip
-auditor flagged it (`overall_match = "disagree"`). After (a) the
-scale-guidance prompt block in `system_prompt_propose` and (b) fixing
-the narrative's stale "through 2018Q3" date to "through 2025Q2", the
-re-run produced a clean round:
+The matrix is shipping and the LUR narrative converges on iter 1, but
+three follow-ups would harden it:
 
-- 6 PTM adjustments at value=**0.001** (= +0.1pp on the quarterly rate)
-- placed 2024Q1–2025Q2 (matches the narrative window)
-- price level ends 2025Q4 at +1.3% above baseline
-- NCR rises ~1pp via Taylor Rule (endogenous response, not an LLM proposal)
-- real Y / RC / GNE all -0.5 to -0.6% (textbook output cost of higher prices)
-- LUR essentially unchanged
-- Round-trip auditor: `overall_match = "agree"`, all 4 claims agree
+**a) Upgrade propose-step from Haiku → Sonnet 4.6.** Haiku is observed
+to occasionally ignore the matrix's "linear scaling" hint and still
+guess magnitudes. Sonnet is plausibly more decisive at the same cost
+class. One test round to confirm. Change in `_targets.R` →
+`refined_round` → `propose_with_refinement(model = "claude-sonnet-4-6")`.
 
-The end-to-end LLM round now works as designed.
+**b) Dynamic shock window.** `sensitivity_matrix()` currently fixes
+`shock_start = "2020Q1"` so h+16 lands at 2024Q1 — fine for our
+horizon ending 2025Q4. If `estimation_end` ever pushes the horizon
+later, h+16 falls outside the projection window and entries get
+dropped. Compute `shock_start` dynamically as `horizon[2] - 17 quarters`
+so the longest offset always fits.
 
-### 2. Stress-test the round-trip with a LUR-focused narrative — DONE
+**c) Distinguish "narrative inconsistent" from "translation error" in
+the report.** The LUR narrative's audit flags `disagree` on the
+cash-rate / inflation claims, but those are unavoidable MARTIN
+responses to a 1.5pp labour-market shock — not translation errors.
+Add a "narrative coherence" section to `reports/round.qmd` that
+highlights claims marked disagree where the projection effect is in
+the expected direction (Taylor Rule cut after looser labour market).
+This requires the report to *interpret* the audit, not just print it.
 
-Ran the labour-market narrative ("employment stronger than the model
-predicts, LUR ~1.5pp below baseline by 2025Q4"). Findings:
+### 2. RSTAR full-port accuracy (~½–1 session)
 
-- **Equation choice was *better* than expected.** The LLM picked
-  TLUR (the structural NAIRU / trend unemployment) rather than LUR
-  cyclical or LE. The narrative explicitly cites structural causes
-  (long-COVID, immigration composition, care-economy growth), and a
-  TLUR shift is the right MARTIN representation for that — actual
-  LUR pulls toward TLUR via the error-correction term in the LUR
-  behavioural. Sidesteps the LF-identity gotcha entirely.
-- **Magnitude was qualitatively right, quantitatively ~5x too small.**
-  Proposed -0.075pp/quarter on TLUR for 12 quarters with `carry`,
-  expected -1.5pp on LUR by 2025Q4. Got -0.29pp. The LUR equation's
-  Okun-error-correction speed is slow (LUR_DUM=0.025 in the LHS),
-  so only ~30% of the TLUR shift passes through to LUR within the
-  12-quarter window. The LLM doesn't have a feel for this damping.
-- **Audit caught it.** Round-trip flagged claim 3 (-1.5pp on LUR) as
-  `disagree`; `overall_match = "partial"`. The design working.
-
-The run also surfaced two judgement-package bugs:
-- `describe_projection` was fed the narrative *and* told to "mirror
-  the framing," making round-trip trivially self-satisfied. Now the
-  describer is blind to the narrative by design.
-- `projection_diff_text` emitted "(-5.2%)" for LUR (percent change of
-  a percent), which the describer misread as pp. Now emits "pp" for
-  rate variables explicitly.
-
-### 3. Magnitude calibration via few-shot examples — DONE (option b)
-
-Implemented option (b) — three worked examples in
-`system_prompt_propose` (PTM sticky inflation, TLUR structural shift
-showing the 5x undershoot, LUR direct cyclical) plus a "critical
-heuristic" block teaching that trend AFs pass through to cyclical
-variables at only ~25–40% of their level shift. Re-running the LUR
-narrative:
-
-- Before few-shot: LLM picked TLUR @ -0.075 → realised LUR -0.29pp
-  (5x undershoot vs narrative's -1.5pp target).
-- After few-shot: LLM picks LUR direct @ -0.19 over 8 quarters →
-  realised LUR -1.60pp by 2025Q4 (hits target within 0.1pp).
-
-Also added a variable glossary to `projection_diff_text` because the
-describer was hallucinating variable meanings — it called NCR "nominal
-cost of revenue" when NCR is the nominal cash rate. The glossary fixes
-that; the describer now correctly identifies NCR, P, PTM, etc.
-
-End-state: round-trip on the LUR narrative is now genuinely strict.
-Agrees that LUR target was hit, but disagrees that "no change to
-cash-rate path" / "no change to inflation" — because in MARTIN you
-cannot lower LUR by 1.5pp without the Taylor Rule and Phillips curve
-responding. The system surfacing genuine narrative-vs-model gaps.
-
-**Follow-ups if you want more polish here:**
-- Option (a) — calibration loop — DONE this session. See item 4.
-- Option (c) — sensitivity matrix — would let the LLM reason about
-  multi-equation interactions ahead of time (so it could pre-suppose
-  the Taylor-Rule response and add an NCR AF if the narrative wants
-  to suppress it). Big payoff but needs ~95 pre-solves + delivery
-  format design. ~1 session. See item 5.
-
-### 4. Iterative refinement loop — DONE (option a of item 3)
-
-Implemented `propose_with_refinement()` orchestrator (in
-`packages/judgement/R/propose_adjustments.R`) and wired it into
-`_targets.R` as a new `refined_round` target. The pipeline now runs
-the full agentic loop: propose → solve → describe → audit → if
-disagree, refine → repeat (default `max_iters = 3`).
-
-Key implementation choices:
-- `solve_fn` callback in the orchestrator's signature so judgement
-  stays decoupled from `martin::solve_martin`'s database/horizon
-  arguments. The targets node closes over `database_with_handover`,
-  `horizon`, and `estimation_end`.
-- `refine_adjustments()` is a separate exported function with its own
-  prompt that explicitly tells the LLM it can (a) adjust magnitudes,
-  (b) extend/shorten horizon, (c) add cancelling AFs (e.g. NCR AF to
-  hold the cash-rate path), or (d) drop side-effect-laden AFs.
-- `pick_best_iteration()` scores by audit verdict
-  (agree > partial > disagree), ties broken by earliest. Necessary
-  because the LLM over-corrects in practice — saw a live run where
-  iter 2 added cancelling AFs but iter 3 cranked them up too far,
-  flipping NCR below baseline and producing -2.9% deflation. With
-  best-iter selection the orchestrator returns iter 1 (the cleanest
-  proposal) instead of the latest (worst) one.
-- New `adjustment()` source value `"llm-refined"` distinguishes
-  refined proposals from initial ones in audit trails.
-
-Test coverage: 5 new unit tests using a `fake_chat_queue` that pops a
-queue of structured + free responses across the propose/describe/
-audit/refine call sequence. Cover the audit-already-agrees path, the
-disagree→refine→agree path, max-iters cap, empty-initial-proposal
-early exit, and over-correction best-iter selection.
-
-**Known issue / next-tier problem:** the LLM is non-deterministic on
-equation choice. On one run it correctly picked LUR with the right
-magnitude; on the next it picked TLUR (despite Example B in the
-system prompt being literally about TLUR's slow pass-through), then
-under-shot the magnitude target. The few-shot examples don't always
-override the LLM's own preferences. Two paths to address:
-- Stronger prompt: re-rank equation choice toward "cyclical
-  equation when narrative quantifies cyclical effect."
-- Eval-based selection: when audit returns disagree on a magnitude
-  claim, do one more iter that's explicitly framed as "you chose
-  equation X with value Y, got effect Z far below the target — try
-  a different equation or much larger value."
-
-### 5. Sensitivity-matrix appendix — DONE (option c)
-
-Implemented as `martin::sensitivity_matrix(database, baseline, horizon,
-...)` plus `judgement::format_sensitivity_text(matrix)`. For each of
-the 56 adjustable equations, pre-solves with a per-unit-type
-calibration shock (small enough not to blow up MARTIN; log_diff=0.001,
-level=0.05, percent=0.10) sustained over 4 quarters with decay_50, and
-records deviations on the 7 headline aggregates at h+1, h+4, h+8, h+16.
-~30s build, cached by targets. Renders as ~3.4k tokens of grouped text
-that goes into the propose / refine system prompt.
-
-The propose prompt now instructs the LLM to use the matrix as its
-**primary** calibration source — linear scaling of the deviations
-approximates the effect of larger shocks. New `sensitivity_matrix`
-argument threaded through `propose_adjustments()`,
-`refine_adjustments()`, and `propose_with_refinement()`. Pipeline now
-19 targets.
-
-**Live LUR-narrative result (first iteration!):**
-
-- Equation choice: **LUR** (correct; previously the LLM flipped between
-  LUR and TLUR across runs).
-- Value: -0.12 / quarter over 12 quarters.
-- Realised: LUR -1.28pp by 2025Q4 (target -1.5pp; off by 0.22pp,
-  within the auditor's "roughly 1.5pp" tolerance).
-- Round-trip: LUR claim **agree** on iter 1.
-- Cash-rate / inflation claims still disagree, but those are the
-  unavoidable MARTIN responses (Taylor Rule + Phillips curve) to a
-  1.5pp labour-market shock — the narrative is over-constrained, not
-  the LLM. Iter 2-3 added NCR AFs trying to cancel; best-iter
-  correctly picked iter 1 as the cleanest proposal.
-
-**Follow-ups if you want more polish here:**
-- The propose model is still Haiku. Sonnet 4.6 might use the matrix
-  more decisively (Haiku is observed to ignore the "linear scaling"
-  hint sometimes). Test cost is one extra round.
-- Currently the matrix is built once at pipeline start with a fixed
-  shock at 2020Q1. If `estimation_end` extends past 2025Q2 in a future
-  round, the shock window may need to shift to a later quarter so the
-  16-quarter offset still fits inside the horizon.
-- The over-constrained-narrative case (LUR target hit but cash-rate /
-  inflation unavoidably move) is a *real* finding the round-trip
-  surfaces — could be made more visible in the report (e.g. "the
-  audit flagged claim X because of MARTIN's endogenous response, not
-  a translation error").
-
-### 6. RSTAR full-port accuracy improvement (~½–1 session)
-
-`fit_rstar_kfas_full` is now **stable** on live data (fixed-prior
+`fit_rstar_kfas_full` is **stable** on live data (fixed-prior
 structural params via `RSTAR_FULL_PARAMS` produce live values in the
-plausible [-0.004, 4.805] range), but the **accuracy** vs fixture is
+plausible [-0.004, 4.805] range), but **accuracy** vs fixture is
 mediocre (cor ~ 0.30) — the smoothed nrate state doesn't track the
-fixture's RSTAR closely. The simple smoother
-(`fit_rstar_kfas`, cor ~ 0.96) remains the default.
+fixture's RSTAR closely. The simple smoother (`fit_rstar_kfas`,
+cor ~ 0.96) remains the default.
 
 Paths to improve full-port accuracy:
 
-- **Joint MLE**: write a custom `optim()` likelihood that estimates
-  structural + variance params jointly (currently the two-step
-  OLS-pre-est + fitSSM-on-variances structure leaves structural
-  params at OLS values that don't co-optimize with the smoother).
+- **Joint MLE**: custom `optim()` likelihood that estimates structural
+  + variance params jointly (currently the two-step OLS-pre-est +
+  fitSSM-on-variances structure leaves structural params at OLS values
+  that don't co-optimize with the smoother).
 - **Better initial states**: replace the centred-MA proxies with
-  actual HP filter (lambda=1600) — KFAS's `SSMtrend(degree=2)` with
+  actual HP filter (lambda=1600). KFAS's `SSMtrend(degree=2)` with
   the right Q reproduces HP exactly.
 - **Stronger Okun coefficient**: beta_1 = -0.3 may be too weak; try
   beta_1 = -0.5 to disentangle ygap from NAIRU more sharply.
@@ -316,246 +143,50 @@ Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
 auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
 expose.
 
-### 7. PI_E / TLUR fidelity restoration — DONE
-
-Both v0 ports now have the dropped structure restored:
-
-- **PI_E**: 2-state model (cpistar + cpistarL1) with AR(1) correction
-  on DL4PTM signal and 5 GST dummies on survey signals. OLS-pre-est
-  of delta and 5 lambdas; pre-subtracted from observations to keep
-  KFAS linear.
-- **TLUR**: dlptm equation gains beta_{1..3} (lagged-inflation AR),
-  phi_1 (cross-equation ULC effect), alpha_1 (import-price
-  pass-through via dl4pimp from PMCG). dlulc equation gains
-  omega_{1..2} (lagged ULC AR). All pre-OLS-estimated; pre-subtracted
-  before KFAS sees the modified observations.
-
-### 8. Nowcast bridge equations — DONE
-
-True monthly-indicator bridge equations now ship via
-`nowcast::nowcast_handover(method = "bridge_monthly", ...)`.
-Architecture:
-
-- `sibyldata::nowcast_monthly_indicators(panel, vars)` exposes raw
-  monthly catalogue series as bimets `FREQ=12` time series (parallel
-  to the quarterly database the main pipeline produces).
-- `nowcast_handover` gains a `bridge_indicators` argument (target →
-  indicator name map) plus a `monthly_indicators` argument. Targets
-  with no mapped indicator fall back to ARIMA gracefully.
-- `forecast_one_bridge_monthly()` aggregates the monthly indicator
-  to per-quarter buckets (mean), fits `lm(target ~ indicator)` on
-  the full-quarter (3-month) historical subset, then predicts the
-  forecast quarter using whatever partial-quarter indicator months
-  are already available. Falls back to ARIMA if OLS fit is degenerate
-  or no indicator data covers the forecast horizon.
-- Added catalogue row for `RT` (ABS 8501.0 retail trade total
-  turnover seasonally adjusted, monthly) as the canonical
-  consumption indicator. HOURS and LE are existing monthly rows.
-
-Live demo (`scripts/monthly_bridge_demo.R`) shows the bridges in
-action on current ABS data. Bridge revisions vs ARIMA baseline:
-
-  RC ← RT     : +7.4% (retail trade leading consumption higher)
-  Y  ← HOURS  : +4.4-5.5% (hours-worked growth)
-  LE ← LE     : -0.4-0.8% (trivial bridge, ~unchanged)
-
-Tests: 7 new unit tests + 1 catalogue-rule test.
-
-Follow-up ideas (none required for v0):
-- Add building approvals → ID, capex → IB indicator mappings
-- Wire the bridge into `_targets.R` so `tar_make()` picks
-  bridge_monthly when monthly data is fresher than quarterly
-- AR(1) error term on the bridge regression for better intervals
-
-### 9. Faithful state-space accuracy (~1 session)
+### 3. Faithful state-space accuracy across PI_E / TLUR / RSTAR (~1 session)
 
 The faithful PI_E and TLUR ports trade a few correlation points
 against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
-TLUR cor ~ 0.8 vs the v0's roughly cor ~ 0.9 simpler structure). If
-accuracy is the priority over structural fidelity, the OLS-pre-est
-step can be replaced with EViews-published parameter values once
-those are available, or with joint MLE.
+TLUR cor ~ 0.8 vs the v0's simpler structures at ~0.9). If accuracy
+is the priority, the OLS-pre-est step can be replaced with
+EViews-published parameter values (when available) or with joint MLE
+across all three trends.
 
----
+### 4. Nowcast bridges into the pipeline default (~¼ session)
 
-## What's been done
+`nowcast::nowcast_handover(method = "bridge_monthly", ...)` works and
+the live demo (`scripts/monthly_bridge_demo.R`) shows it lifts
+consumption nowcasts +7.4% and GDP +4-5% above ARIMA. But `_targets.R`
+still uses the ARIMA default. Switch the handover target to bridge
+when monthly indicators are fresher than quarterly ones (or just
+always — bridge falls back to ARIMA gracefully when no indicator data
+is mapped).
 
-History of the major workstreams that have landed. Each is fully
-operational and tested; details below.
-
-### A. Live-data coverage push — DONE
-
-The pipeline now defaults to `data_source = "live"` and solves
-end-to-end. Done items:
-
-1. ~~**Dummy series**~~ **DONE.** 41 dummy rows via
-   [`apply_dummies()`](packages/sibyldata/R/dummies.R) +
-   [dummies.csv](packages/sibyldata/inst/extdata/dummies.csv). Kinds
-   covered: `pulse` (22), `tristate` (1, D_OLYX), `range_*` (5),
-   `trend_carry` (5), `counter_carry` (8). Each bit-identical to
-   the bundled fixture in
-   [test-dummies.R](packages/sibyldata/tests/testthat/test-dummies.R).
-
-2. ~~**Scalars**~~ **PARTIAL/DONE.** Only `PI_TARGET = 2.5` was
-   actually needed — every other scalar in `modify_data.prg:694-713`
-   is inlined as a literal in `MARTINMOD_AF.txt` (e.g. `2 * LURGAP`
-   for the NCR Taylor Rule is `TR_LURGAP`) and not referenced by
-   name.
-
-3. ~~**Flipping the default to `data_source = "live"`**~~ **DONE.**
-   `update_data()` now defaults to `sources = "all"` with
-   `tolerate_failures = TRUE` (a flaky ABS run warns and continues
-   rather than killing the pipeline). `_targets.R`'s live branch
-   calls [`sibyldata::merge_with_fallback()`](packages/sibyldata/R/merge.R)
-   against `martin::read_fixture()` so series with shorter live
-   histories than MARTIN's behavioural-equation TSRANGEs get the
-   fixture's long history.
-
-Punted from this session — left as follow-ups below:
-
-- **IAD weights** (`IAD_W_C/I/GI/GC/X`) — not scalars; they're
-  time-varying annual series interpolated from input-output omega
-  tables ([io_calcs.prg:315-740](references/MARTIN-master/Programs/io_calcs.prg)).
-  Currently served from the fixture via `merge_with_fallback`.
-  Proper port is ~½ session.
-- **`IBCR` + chain** (RBR, IBNDRA, IBCTR, IBNDR) — IDENTITY in the
-  model file ([MARTINMOD_AF.txt:655-656](references/bimets-main/MARTINMOD_AF.txt))
-  with a chain of dependencies. Currently served from the fixture.
-  Porting cleanly means adding the whole chain.
-
-### B.b. IBCR identity chain + IAD weights — DONE
-
-Removes another cluster of fixture dependencies via
-[packages/sibyldata/R/identities.R](packages/sibyldata/R/identities.R):
-
-- **IBCTR** (corporate tax rate) — `apply_ibctr()` builds a piecewise-
-  constant series from 13 breakpoints lifted from
-  [import_data.prg:535-562](references/MARTIN-master/Programs/import_data.prg#L535-L562).
-- **IBNDR** (non-mining depreciation rate) — `apply_ibndr_annual()`
-  ports modify_data.prg:487-500 faithfully: pulls annual ABS 5204.0
-  CFC and K series (4 new catalogue rows: CFCTOT, CFCID, CFCOTC,
-  CFCIBRE), computes annual CFCIBN/lag(KIBN,1), converts to quarterly
-  rate, linearly interpolates to quarterly. Falls back to the static
-  `apply_ibndr()` placeholder if any annual input is missing.
-  Live range [1.14, 1.70] vs fixture [1.14, 1.65].
-- **IBNDRA / RBR / IBCR** — added as catalogue derived rows with
-  formula expressions using `bimets::TSLAG()` for lagged terms.
-  Evaluated automatically by `add_derived_series` after IBCTR/IBNDR
-  are present.
-- **IAD_W_C/I/GI/GC/X** — vendored `references/MARTIN-master/Data/t_iad.csv`
-  directly to `inst/extdata/iad_weights.csv` (the pre-computed output
-  of EViews's io_calcs.prg). Loading 13 year-specific ABS XLS files
-  with hardcoded cell ranges is brittle; vendoring the output gives
-  the same series with much less risk. A future
-  `update_iad_weights()` could read fresh IO tables.
-
-Bug fixed in `cumulate_pct_to_level` from previous session was
-re-confirmed; CSV description fields containing `lag(IBNDR,1)` now
-get quoted properly.
-
-### B. State-space estimation port — PARTIAL
-
-The three supply-side trends landed this session via KFAS ports in
-[packages/sibyldata/R/state_space.R](packages/sibyldata/R/state_space.R):
-
-- ~~**TDLLA, TLLA**~~ — local-linear-trend on `log(LA)` (port of
-  `supply_side.prg:17-44`). Live ABS A2304192L (labour productivity)
-  feeds it. Estimate has ~20 % mean offset vs fixture (which makes
-  sense — different vintages, different ABS series methodology
-  between EViews's snapshot and current ABS).
-- ~~**TDLLPOP, TLLPOP**~~ — local-linear-trend on `log(LPOP)` (port
-  of `supply_side.prg:46-73`). Modern-period (1990+) decadal means
-  agree with fixture to within 0.001 % (essentially exact).
-- ~~**TDLLHPP, TLLHPP**~~ — random-walk + drift on `log(LHPP)` (port
-  of `supply_side.prg:75-108`). LHPP itself is added as a derived
-  catalogue row (`HOURS / LE * 3`). Drift estimate within 14 % of
-  EViews's MLE (small absolute error: ~1e-4 on a value ~1e-3).
-
-Because the merge prefers whichever source has more history, live
-KFAS estimates only "win" over the fixture when live ABS data extends
-beyond 2019Q3 — currently `TDLLA` only (ABS LA goes through ~2026Q1).
-The pipeline solves end-to-end with the new live trends in the path.
-
-**Remaining state-space models: all six trends now have v0 KFAS ports.**
-
-- ~~**`PI_E`**~~ **DONE (v0)** — 7-signal local-level KFAS port of
-  [pistar.prg](references/MARTIN-master/Programs/pistar.prg). Drops
-  the AR(1) correction on DL4PTM and GST dummies on surveys; treats
-  the seven inflation indicators (DL4PTM + 5 RBA G3 surveys + bond
-  expectations PI_E_BOND) as common-trend noisy observations.
-  Added 5 RBA G3 series to the catalogue (GBUSEXP, GUNIEXPY,
-  GUNIEXPYY, GMAREXPY, GMAREXPYY).
-- ~~**`TLUR`**~~ **DONE (v0)** — 1-state Phillips-curve port of
-  [nairu.prg](references/MARTIN-master/Programs/nairu.prg) with
-  two-step OLS-pre-estimate + KFAS smoother. Simplifies signals to
-  the core (dlptm - pi_eq) and (dlulc - pi_eq) on (LUR - NAIRU),
-  dropping the lagged-inflation autoregression and import-price
-  pass-through. Mean ~6.15% vs fixture 5.24%.
-- ~~**`RSTAR`**~~ **DONE (v0)** — smoothed real cash rate via KFAS
-  local-linear-trend on `NCR - 4 * 100 * dlog(PTM)`. NOT a faithful
-  port of [rstar.prg](references/MARTIN-master/Programs/rstar.prg)'s
-  11-state Okun-Phillips model — that's a session unto itself; the
-  v0 captures the slow movement of real rates. Mean ~2.27% vs
-  fixture 3.04%.
-
-Two bug fixes shipped alongside:
-
-1. `cumulate_pct_to_level` previously returned the raw percent series
-   unchanged when the base quarter (1982Q1) preceded the live ts
-   start (live PTM begins 1982Q2). Now it cumulates from the first
-   available quarter with the catalogued base value as the implicit
-   pre-base level — accepts a small index-level error for the gap
-   quarters in exchange for a working level index.
-2. `apply_state_space_trends`'s condition checks used `database$X`
-   which R partial-matches: `database$PI_E` was silently returning
-   `database$PI_E_BOND` (preventing the PI_E fit from running and
-   feeding bond yields into TLUR's pi_eq calculation). Switched all
-   ambiguous lookups to `[["X"]]` for exact matching.
-
-Future fidelity improvements for the v0 ports:
-
-- Re-add the AR(1) correction on DL4PTM and the GST dummies for PI_E.
-- Restore the lagged-inflation autoregression and import-price
-  pass-through for TLUR (would require pre-estimating more
-  coefficients via OLS).
-- Port rstar.prg's 11-state model faithfully (output gap + 3 lags,
-  potential GDP + trend growth, NAIRU + 1 lag, neutral rate + 1 lag,
-  z) — a session of its own.
-
-### C. Nowcast monthly bridge equations (~½ session)
-
-`nowcast::nowcast_handover()` is currently univariate ARIMA/ETS per
-variable. The "deliberately simple" v0 recovers 82 % of headline
-aggregates within 5 % mean relative error against the fixture. Real
-improvement would come from monthly bridge equations using leading
-indicators (LFS, retail trade, building approvals, business
-indicators). The signature is already there:
-
-```r
-nowcast_handover(database, h = 2, method = "arima")
-```
-
-Add `method = "bridge"` that pulls monthly indicators from sibyldata
-and regresses quarterly outcomes on contemporaneous monthly indicator
-averages.
-
-### D. Catalogue gap items
+### 5. Catalogue gap items (~¼ session)
 
 A handful of derived rows still can't materialise because their
 inputs aren't in the catalogue:
 
-- **`LURGAP`** — needs `TLUR` (NAIRU). Set formula to `LUR - TLUR`
-  once TLUR is catalogued.
-- **`NBRSP`** — needs `NBR` (which now comes from the splice handler;
-  derived formula `NBR - NCR` should work but needs the row added).
-- **`PAE`** — needs `LHPP` (hours per person). The legacy code
-  computes LHPP as `hours / le * 3` then `lhpp = hours_hist / le_hist`
-  backcast.
+- **`LURGAP`** — needs `TLUR` catalogued (it's currently produced by
+  the state-space layer but isn't a catalogue row). Set formula
+  `LUR - TLUR` once `TLUR` is in.
+- **`NBRSP`** — needs `NBR` (now coming from the splice handler).
+  Derived formula `NBR - NCR` should work; just add the catalogue row.
+- **`PAE`** — needs `LHPP` (hours per person). Legacy code computes
+  `hours / le * 3` then `lhpp_hist = hours_hist / le_hist` backcast.
 
-### E. `fetch_oecd`
+### 6. `fetch_oecd` for trading-partner-weighted world variables (~½ session)
 
-For trading-partner-weighted world variables (WY, WP, WPX) instead
-of the current FRED US proxies. Lowest priority — proxies work.
+WY / WP / WPX currently use FRED US proxies. Real OECD trading-partner
+weights would be cleaner. Lowest priority — proxies work.
+
+### 7. Multi-round narrative coherence test (~¼ session)
+
+Run three different narratives back-to-back through the pipeline
+(sticky inflation, labour-market gap, capex slowdown) and confirm that
+(a) the LLM picks distinct equations per narrative, (b) the round
+reports are visually distinguishable, (c) the round-trip audits don't
+falsely cross-contaminate. Confidence-building rather than feature work.
 
 ---
 
@@ -566,57 +197,60 @@ packages/
 ├── sibyldata/
 │   ├── R/
 │   │   ├── catalogue.R          ← series_catalogue() accessor
-│   │   ├── update_data.R        ← top-level update_data() + to_martin_database()
-│   │   ├── fetch_fred.R         ← live FRED via fredr
-│   │   ├── fetch_rba.R          ← live RBA via readrba
-│   │   ├── fetch_abs.R          ← live ABS via readabs
-│   │   ├── fetch_worldbank.R    ← bundled CMO xlsx
-│   │   ├── fetch_bom.R          ← live BoM SOI plaintext
-│   │   ├── fetch_other.R        ← (empty file; markers for moved fns)
-│   │   ├── transformations.R    ← apply_level_from_pct / splices / chowlin / PIM
-│   │   ├── derived.R            ← evaluate_derived_formula / add_derived_series
+│   │   ├── update_data.R        ← update_data() + to_martin_database()
+│   │   ├── fetch_*.R            ← live FRED / RBA / ABS / WB / BoM
+│   │   ├── transformations.R    ← level_from_pct / splices / chowlin / PIM
+│   │   ├── derived.R            ← evaluate_derived_formula
+│   │   ├── identities.R         ← apply_ibctr() / apply_ibndr_annual()
+│   │   ├── state_space.R        ← KFAS ports of PI_E, TLUR, RSTAR, TDLLA, ...
 │   │   ├── extend_exogenous.R   ← future-horizon exogenous extension
 │   │   └── cache.R              ← parquet cache by (source, vintage)
-│   └── inst/extdata/series_catalogue.csv   ← 163 rows / 49 formulas
+│   └── inst/extdata/
+│       ├── series_catalogue.csv ← 163 rows / 49 formulas
+│       ├── iad_weights.csv      ← vendored IO-tables IAD weights
+│       └── dummies.csv          ← 41 dummy series definitions
 │
 ├── martin/
 │   ├── R/
-│   │   ├── load_martin.R        ← LOAD_MODEL / LOAD_MODEL_DATA / ESTIMATE wrapper
-│   │   ├── solve_martin.R       ← SIMULATE wrapper + residual-decay extension
-│   │   ├── to_constant_adjustment_list.R  ← bridge to bimets ConstantAdjustment
-│   │   ├── read_fixture.R       ← reads bundled MARTINDATA xlsx
+│   │   ├── load_martin.R        ← LOAD / ESTIMATE / TSRANGE rewriter
+│   │   ├── solve_martin.R       ← SIMULATE wrapper + residual decay
+│   │   ├── sensitivity_matrix.R ← pre-shock + propagation tibble
+│   │   ├── to_constant_adjustment_list.R
+│   │   ├── read_fixture.R
 │   │   ├── equation_catalogue.R ← LLM-facing equation menu
-│   │   └── utils.R              ← extend_residual_with_decay, bimets warning muffler
+│   │   └── utils.R
 │   └── inst/extdata/
-│       ├── MARTINMOD_AF.txt              ← canonical model file (frozen coefficients)
-│       ├── MARTINMOD.txt, MARTINMOD_EST.txt  ← alternative variants
-│       ├── martin_data_fixture.xlsx      ← frozen MARTINDATA snapshot
-│       └── equation_catalogue.csv        ← 70 equations, adjustable flag, plain English
+│       ├── MARTINMOD_AF.txt        ← canonical model file
+│       ├── martin_data_fixture.xlsx
+│       └── equation_catalogue.csv  ← 70 equations, adjustable flag
 │
 ├── judgement/
 │   ├── R/
-│   │   ├── adjustment.R         ← S3 class + validator + expand_adjustments
-│   │   ├── quarter.R            ← yyyyQq parsing
-│   │   ├── propose_adjustments.R ← LLM call + review_and_approve
-│   │   ├── describe_projection.R ← LLM call + compare_narrative_to_description
-│   │   └── llm_helpers.R        ← prompt construction, schemas
+│   │   ├── adjustment.R         ← S3 class + validator
+│   │   ├── quarter.R
+│   │   ├── propose_adjustments.R ← propose / refine / orchestrator
+│   │   ├── describe_projection.R ← blind describer + round-trip audit
+│   │   └── llm_helpers.R        ← prompts, schemas, format_sensitivity_text
 │
 └── nowcast/
     └── R/
-        ├── handover.R           ← curated handover_variables()
-        ├── conversion.R         ← bimets ↔ tsibble helpers
-        └── nowcast.R            ← fable-based univariate forecasts + splice
+        ├── handover.R           ← handover_variables() + bridge_monthly
+        ├── conversion.R
+        └── nowcast.R
 
 references/
-├── MARTIN-master/   ← EViews / R legacy implementation (read-only)
-└── bimets-main/     ← the bimets MARTIN port martin is built on
+├── MARTIN-master/   ← EViews / R legacy (read-only)
+└── bimets-main/     ← the bimets MARTIN port we wrap
 
 scripts/
-├── _init.R                      ← renv + deps bootstrap
-├── capture_bimets_reference.R   ← debugging aid for the regression test
-└── live_integration_smoke.R     ← the live-data end-to-end smoke test
+├── _init.R
+├── capture_bimets_reference.R   ← regression-test capture
+├── live_integration_smoke.R     ← end-to-end live-data smoke
+├── lur_gap_walkthrough.R        ← manual AF demo (LUR -1.6pp closes the gap)
+├── end_to_end_round_walkthrough.R  ← manual round demo
+└── monthly_bridge_demo.R        ← bridge vs ARIMA comparison
 
-_targets.R                       ← end-to-end pipeline (15 targets)
+_targets.R                       ← end-to-end pipeline (19 targets)
 reports/round.qmd                ← Quarto round report
 DESIGN.md                        ← longer architectural story
 CLAUDE.md                        ← context for sessions
@@ -626,219 +260,95 @@ CLAUDE.md                        ← context for sessions
 
 ## Gotchas
 
-- **bimets is case-sensitive.** All `martin_var` values in the
-  catalogue and all keys in the MARTIN database must be UPPERCASE.
-  We had a bug for several sessions where legacy lowercase names
-  (`rc`, `gi`, `ngi`) wouldn't have matched MARTIN's `RC`, `GI`,
-  `NGI`. Fixed in the last autonomous session.
+- **bimets is case-sensitive.** `martin_var` values + database keys
+  must be UPPERCASE.
 
-- **MARTINMOD_AF.txt warns "outdated BIMETS version".** Harmless —
-  the vendored .txt was authored with an older bimets release and
-  has no version stamp. Muffled surgically in `martin::utils.R`'s
-  `.suppress_bimets_version_warning()`.
+- **MARTINMOD_AF.txt warns "outdated BIMETS version".** Harmless;
+  muffled in `martin::utils.R`'s `.suppress_bimets_version_warning()`.
 
-- **bimets warns "NaNs produced" during ESTIMATE.** Also harmless
-  — comes from computing the SER on imposed-coefficient (`c1=1`)
-  equations where the SSR is ≈ 0 to numerical precision. Don't
-  blanket-suppress (it's a real bimets warning).
+- **bimets warns "NaNs produced" during ESTIMATE.** Also harmless —
+  comes from computing SER on imposed-coefficient (`c1=1`) equations
+  where SSR ≈ 0. Don't blanket-suppress.
 
-- **Live ABS / RBA series often have shorter history than the
-  fixture.** When merging live + fixture for an integration solve,
-  prefer the fixture for series with longer history — see
-  `scripts/live_integration_smoke.R` for the merge logic. Otherwise
-  the model's behavioural-equation TSRANGEs (some going back to
-  1959) won't be satisfied.
+- **Live ABS / RBA series often have shorter history than the fixture.**
+  `merge_with_fallback()` prefers whichever source has more history.
+  Otherwise behavioural-equation TSRANGEs (some back to 1959) fail.
 
-- **The PH backward splice was a real find.** Live ABS housing
-  prices only go back to ~2002, but the ID equation needs
-  `RPH = PH / PTM` back to 1987. PH ← PH_OLD backward splice fixes
-  it. Pattern: any series with a deprecated legacy companion in
-  `references/MARTIN-master/Programs/modify_data.prg` probably
-  needs a similar splice rule.
+- **The PH backward splice.** Live ABS housing prices only go back to
+  ~2002, but the ID equation needs `RPH = PH / PTM` back to 1987.
+  Pattern: any series with a deprecated legacy companion in
+  `modify_data.prg` probably needs a similar splice rule.
 
-- **The `_targets/` directory is gitignored.** Pipeline state is
-  per-machine. To re-run from scratch: `targets::tar_destroy()`.
+- **`_targets/` is gitignored.** Per-machine state. To restart clean:
+  `targets::tar_destroy()`.
 
 - **Quarto must be on PATH** at `tar_make()` time, not just when
-  the report target runs — `tar_quarto()` (and our `tar_target` shim)
-  probe for it eagerly. The shim soft-skips if absent.
+  the report target runs. The shim soft-skips if absent.
 
-- **The hardcoded FRED key in scripts is from import_data.prg.**
-  Both `scripts/capture_bimets_reference.R` and
-  `scripts/live_integration_smoke.R` reference it via env var, never
-  hardcode it. The legacy import_data.prg has a hardcoded
-  `%FRED = "..."` — that's institutional history, not a current
-  pattern.
+- **`typical_af_sd` is unreliable for log_diff equations.** It's set
+  to 0.1 for PTM's log_diff residual, which means +10pp/quarter
+  inflation — catastrophic if the LLM ever interprets it literally.
+  The sensitivity matrix uses fixed per-unit-type calibration shocks
+  (log_diff=0.001, level=0.05, percent=0.10) and the system prompt
+  teaches the LLM to scale those linearly.
+
+- **The describer must NOT see the narrative.** `describe_projection()`
+  has a deprecation warning if `narrative` is passed. Otherwise the
+  round-trip audit becomes trivially self-satisfied (the describer
+  mirrors the narrative regardless of what the projection says).
+
+- **Trend AFs (TLUR, RSTAR) pass through to cyclical variables at
+  ~25-40% of their level shift over typical projection windows.** The
+  sensitivity matrix now teaches this to the LLM directly; the
+  walkthrough script `scripts/lur_gap_walkthrough.R` is the original
+  finding.
+
+- **The LLM is non-deterministic on equation choice.** Even with the
+  sensitivity matrix, different runs can pick LUR vs TLUR for the
+  same narrative. The matrix substantially narrows the gap but
+  doesn't eliminate it. The over-correction guard in
+  `pick_best_iteration()` is what catches the worst case.
 
 ---
 
-## What was committed last
+## What's been done (active code surface)
 
-See `git log` for the canonical history. Recent commits, newest first:
+For canonical history use `git log`. Major landed workstreams:
 
-- **Sensitivity matrix + threaded through propose/refine prompts** —
-  closes option (c) of the calibration follow-ups. New
-  `martin::sensitivity_matrix()` pre-solves a per-unit-type
-  calibration shock on each of the 56 adjustable equations and
-  records deviations on the 7 headline aggregates at h+1, h+4, h+8,
-  h+16. `judgement::format_sensitivity_text()` renders the result as
-  ~3.4k-token text grouped by equation, filtered to entries with
-  meaningful propagation. System prompt instructs the LLM to use the
-  matrix as its primary calibration source. Threaded through
-  `propose_adjustments()`, `refine_adjustments()`,
-  `propose_with_refinement()`. New `sensitivity_matrix` target in
-  `_targets.R` (19 targets now). Live LUR-narrative test: LLM picks
-  LUR (correct) with value=-0.12 over 12 quarters → realised
-  LUR -1.28pp vs -1.5pp narrative target on iter 1, round-trip "agree"
-  on the LUR claim. The earlier session's TLUR/LUR confusion is gone:
-  the matrix shows the LLM that LUR-direct shocks pass through ~5x
-  more strongly than TLUR shocks at h+16, and it picks accordingly.
-- **Iterative refinement loop** — closes option (a) of the calibration
-  follow-ups. New `propose_with_refinement()` orchestrator runs the
-  agentic loop in the judgement package; new `refine_adjustments()`
-  takes a prior proposal + audit feedback and re-prompts the LLM to
-  revise. Pipeline wired: `refined_round` target + `refinement_history`
-  for inspection. Includes best-iter selection so the orchestrator
-  doesn't return an over-corrected later iteration — observed in a
-  live LUR run where iter 2 added cancelling NCR/PTM AFs but iter 3
-  cranked them up too far (NCR below baseline, prices -2.9%); the
-  selector correctly returned iter 1. 5 new unit tests with a
-  fake_chat_queue covering the audit-already-agrees, disagree→
-  refine→agree, max-iters cap, empty-initial, and over-correction
-  paths. Pipeline now 18 targets (was 16). Test suite up to 115 pass.
-- **Few-shot examples + variable glossary close the LLM calibration
-  gap** — three worked examples in `system_prompt_propose` (PTM sticky
-  inflation, TLUR with documented 5x undershoot, LUR direct cyclical)
-  plus a "trend → cyclical pass-through is 25-40%" heuristic teach the
-  LLM to scale AFs correctly. LUR-narrative round now hits the
-  magnitude target: LLM picks LUR @ -0.19 (was TLUR @ -0.075),
-  realised LUR ends 2025Q4 at -1.6pp vs the narrative's -1.5pp target.
-  A variable glossary in `projection_diff_text` stops the describer
-  from hallucinating variable meanings ("NCR" was being called
-  "nominal cost of revenue" — actually the nominal cash rate). The
-  audit now correctly flags the narrative's internal inconsistency
-  (you can't lower LUR by 1.5pp without the Taylor Rule and Phillips
-  curve responding) — `overall_match = "disagree"`. System working as
-  designed.
-- **Blind describer + clearer diff units + LUR-narrative test** —
-  running a labour-market narrative ("LUR ~1.5pp below baseline by
-  2025Q4 due to structural shifts") surfaced two design bugs: (1)
-  `describe_projection` was fed the narrative and told to "mirror the
-  framing," making the round-trip audit trivially self-satisfied;
-  (2) `projection_diff_text` emitted "-5.2%" for LUR (percent change
-  of a percent), which the describer misread as pp. Fixed both. The
-  audit now does its job — the LLM picked TLUR (correctly! a
-  sophisticated trend-NAIRU shift) at -0.075pp/quarter, but the
-  Okun-EC speed only passed -0.29pp through to actual LUR (vs the
-  narrative's -1.5pp target). Round-trip flagged the magnitude
-  undershoot. The describer is now blind by design; the next-tier
-  problem is magnitude-calibration (item 3 above).
-- **Fix stale narrative date + validate scale-aware prompt** —
-  the narrative in `_targets.R` said "through 2018Q3" but the
-  projection horizon is 2010Q1–2025Q4, which (combined with the LLM's
-  pre-fix calibration issue) caused PTM adjustments to be placed in
-  the wrong window with the wrong magnitude on the first live run.
-  Updating the narrative to "through 2025Q2" + the scale-aware prompt
-  produces a textbook round: 6 PTM AFs at value=0.001 (=+0.1pp/quarter)
-  over 2024Q1–2025Q2, price level ends 2025Q4 at +1.3% above baseline,
-  Y / RC / GNE all -0.5 to -0.6%, NCR +1pp via Taylor Rule (endogenous,
-  not LLM-proposed), LUR essentially unchanged. Round-trip auditor:
-  `overall_match = "agree"`, all 4 narrative claims agreed.
-- **judgement: ellmer shape + factor handling + scale guidance** —
-  three fixes surfaced by running the end-to-end LLM round for real.
-  `propose_adjustments` and `compare_narrative_to_description` now
-  handle ellmer normalising `type_array(items = type_object(...))` to a
-  tibble (the latter previously crashed with subscript-out-of-bounds
-  because vapply iterated over columns); `parse_proposal_to_adjustment`
-  coerces type_enum factors to character before passing to match.arg
-  and is now lenient about value-length mismatches; and
-  `system_prompt_propose` spells out the residual units so the LLM
-  doesn't propose value=0.1 on log_diff equations (which compounded
-  prices +358% on the first live run). The round-trip auditor caught
-  that miscalibration with `overall_match = "disagree"` — the design
-  working as intended. Next step: re-run propose with the new prompt
-  to validate (item 1 above).
-- **LUR-gap walkthrough** — adds
-  `scripts/lur_gap_walkthrough.R` demonstrating that a single
-  add-factor on the LUR behavioural equation closes the post-COVID
-  labour-market gap that re-estimation alone can't fix: baseline LUR
-  5.57% at 2025Q4 → adjusted 4.11% (target ~4.0%), pre-2020
-  unchanged, macroeconomic response internally consistent (NCR
-  tightens via Taylor Rule, modest inflationary push, slightly
-  weaker Y/RC). En-route finding: AF on LE alone doesn't move LUR
-  because LF rises in lockstep via the LF = LE / (1 - LUR/100)
-  identity; the residual lives in LUR's own behavioural, not in
-  LE/LF. Concrete demonstration that the LLM judgement layer's
-  whole-point — translating narratives into targeted residual
-  adjustments that close structural gaps — actually delivers.
-- **MARTIN re-estimation through 2025Q2** — `load_martin()` and
-  `solve_martin()` gain an `estimation_end` parameter that rewrites
-  every `TSRANGE` line in the model text to a user-specified end
-  quarter before bimets loads the model, preserving each equation's
-  start date. `solve_martin(coefficients = "reestimated",
-  estimation_end = "2025Q2")` re-fits all 95 behavioural equations
-  on data through 2025Q2 instead of the frozen 2019Q3 sample.
-  `_targets.R` now uses re-estimation by default. Effect on 2025Q4
-  projections: NCR goes from 0.9% (frozen, no ZLB) to 4.51% (close
-  to actual 4.35%); PTM from 121 to 149 (actual ~140); real GDP
-  from 707k to 590k (actual ~588k). LUR still high (~5.5% vs actual
-  4%) — re-estimation can't fully fix labour-market gap.
-- **Extend live data through 2025Q4** — `merge_with_fallback`
-  rewritten as quarter-by-quarter coalesce (old coverage-based rule
-  threw away live data whose start was later than fixture even when
-  live extended years past the fixture's end). PEX catalogue row
-  fixed to `level_from_pct`. NHFA_TREND dummy added. `_targets.R`
-  horizon extended to `c("2010Q1", "2025Q4")`; `extend_exogenous()`
-  wired into the `raw_database` target to carry forward exogenous
-  variables that end at the fixture's 2019Q3 cutoff. Live data now
-  spans: National Accounts to 2025Q4, prices to 2026Q1, monthly
-  indicators to 2026Q2.
-- **Monthly-indicator bridge equations** — adds
-  `sibyldata::nowcast_monthly_indicators()` to surface raw monthly
-  series alongside the quarterly database; adds
-  `method = "bridge_monthly"` to `nowcast_handover` with
-  `bridge_indicators` + `monthly_indicators` arguments and
-  graceful fallback to ARIMA. Adds the RT (ABS 8501.0 retail
-  trade) monthly catalogue row. Live demo confirms RT → RC bridge
-  revises consumption nowcast +7.4% over ARIMA baseline; HOURS → Y
-  revises real GDP nowcast +4-5%.
-- **Plausibility tests + end-to-end round walkthrough** — codifies
-  economic priors as testthat checks (`test-plausibility.R`,
-  32 cases against the fixture solve); ships a live-pipeline
-  equivalent (`scripts/live_plausibility_check.R`, 27 cases against
-  `tar_load(baseline)`); adds an end-to-end forecast-round walkthrough
-  (`scripts/end_to_end_round_walkthrough.R`) that constructs manual
-  PTM add-factors, runs baseline vs adjusted solves, and verifies the
-  shock propagates as expected (PTM +0.1pp → NCR +0.1pp → NMR +0.1pp
-  → Y -0.02%, all textbook). The walkthrough activates the LLM step
-  when `ANTHROPIC_API_KEY` is set; otherwise prints exactly what
-  command to run.
-- **RSTAR fixed-prior structural params + PI_E/TLUR fidelity +
-  nowcast bridge** — `fit_rstar_kfas_full` now ships with baked-in
-  structural params (RSTAR_FULL_PARAMS) that keep live estimates
-  stable; opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE` actually works
-  without falling back. `fit_pie_kfas` becomes a 2-state model with
-  the AR(1) DL4PTM correction and 5 GST dummies restored.
-  `fit_nairu_kfas` restores beta_{1..3}/phi_1/alpha_1 in dlptm and
-  omega_{1..2} in dlulc. `nowcast_handover` gains `method = "bridge"`.
-- **fit_rstar_kfas_full + NBR splice + coverage-based merge** — the
-  faithful 11-state Okun-Phillips port of rstar.prg lands as
-  `fit_rstar_kfas_full`, opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`.
-  NBR gains a historical splice from F05_FILRLBWAV, lifting NBR live
-  coverage from 27 → 190 obs; RBR / IBCR live coverage follows.
-  `merge_with_fallback` now uses coverage-based comparison (primary
-  wins only if both first_nna and last_nna cover fallback) — fixes
-  regressions where live series with more total obs but narrower
-  historical coverage incorrectly overrode the fixture (N2R, NHC).
-- **IBNDR annual port** — replaces the static 1.5 placeholder with the
-  faithful annual-data port from CFCIBN / KIBN ABS 5204.0 series.
-- **IBCR identity chain + IAD weights (v0 with static IBNDR)** —
-  IBCTR piecewise constant, IBNDR static placeholder, RBR / IBNDRA /
-  IBCR derived formulas, IAD weights vendored from io_calcs.prg
-  output.
-- **PI_E, TLUR, RSTAR state-space ports** — KFAS ports of pistar.prg,
-  nairu.prg, rstar.prg (v0 simplified).
-- **supply_side.prg state-space trends** — TDLLA, TDLLPOP, TDLLHPP
-  via KFAS local-linear-trend / random-walk + drift.
+- **LLM judgement layer (most recent work):**
+  - Sensitivity matrix + threading into propose/refine prompts.
+  - Iterative refinement loop with best-iter selection
+    (`propose_with_refinement()`).
+  - Few-shot worked examples + variable glossary in the propose prompt.
+  - Blind describer + clearer rate-vs-level units in `diff_text`.
+  - ellmer shape/factor handling fixes (tibble vs list, factors).
+  - Round-trip audit catches narrative-vs-model inconsistencies.
 
-Each is fully operational with tests passing.
+- **Live data + database construction:**
+  - Live default (`data_source = "live"` in `_targets.R`); 100 %
+    fixture-coverage via `merge_with_fallback()`.
+  - 41 dummy series via `apply_dummies()`.
+  - IBCR identity chain (IBCTR/IBNDR/IBNDRA/RBR/IBCR) + IAD weights
+    vendored from io_calcs output.
+  - Backward splices (PH ← PH_OLD; NBR ← F05_FILRLBWAV).
+  - `extend_exogenous()` carries exogenous variables past the
+    fixture's 2019Q3 cutoff so the horizon can run to 2025Q4.
+
+- **State-space trends (PI_E, TLUR, RSTAR, TDLLA, TDLLPOP, TDLLHPP):**
+  - V0 KFAS ports of pistar.prg / nairu.prg / rstar.prg / supply_side.prg.
+  - Faithful restorations: PI_E 2-state with AR(1) DL4PTM + GST dummies;
+    TLUR with beta/phi/alpha cross-equation terms.
+  - `fit_rstar_kfas_full` stable but accuracy-improvement opportunity
+    (item 2 above).
+
+- **MARTIN solve / re-estimation:**
+  - `solve_martin()` with frozen + reestimated coefficient paths
+    (TSRANGE rewriter for arbitrary `estimation_end`).
+  - 2025Q2 re-estimation closes the post-COVID gap on NCR/PTM/Y.
+  - Regression test bit-identical to the canonical bimets pipeline.
+
+- **Nowcast handover:**
+  - ARIMA/ETS default + monthly bridge equations
+    (`method = "bridge_monthly"`).
+  - Bridge improves consumption/GDP nowcasts vs ARIMA (item 4 above
+    is the wiring into the default).
