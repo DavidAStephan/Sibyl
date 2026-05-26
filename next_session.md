@@ -227,6 +227,9 @@ scripts/
 
 _targets.R                       ← end-to-end pipeline (21 targets)
 reports/round.qmd                ← Quarto round report
+app/app.R                        ← Shiny dashboard (just dashboard)
+docs/llm_layer.md                ← LLM-judgement walkthrough
+docs/dashboard.md                ← dashboard runtime guide
 DESIGN.md                        ← longer architectural story
 CLAUDE.md                        ← context for sessions
 ```
@@ -357,3 +360,13 @@ For canonical history use `git log`. Major landed workstreams:
     the propose / describe / audit / refine loop, the sensitivity
     matrix, `diagnose_audit()`, and a worked example from the live
     pipeline. Read this before touching anything in `judgement/`.
+  - [docs/dashboard.md](docs/dashboard.md) — runtime guide for the
+    Shiny dashboard (`just dashboard`).
+
+- **Interactive UI:**
+  - [`app/app.R`](app/app.R) is a Shiny dashboard for typing a
+    narrative and watching the round run. Reuses the cached
+    baseline + sensitivity matrix so each click pays only the
+    ~2-4 min LLM+solve cost. Five tabs: Chart (plotly facets),
+    Adjustments, Description, Audit + diagnostics, Iteration
+    history. Launch via `just dashboard`.
