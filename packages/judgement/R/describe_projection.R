@@ -140,3 +140,190 @@ compare_narrative_to_description <- function(narrative,
   attr(tbl, "overall_match") <- as.character(result$overall_match)
   tbl
 }
+
+#' Diagnose disagree claims as translation gaps vs inevitable model responses
+#'
+#' For each row in `audit` flagged `disagree`, this helper attempts to
+#' tell apart two distinct kinds of audit failure:
+#'
+#' * **translation_gap** — the narrative quantified a target on variable X
+#'   and the projection's X didn't move there. Likely indicates an AF
+#'   magnitude / equation-choice issue worth iterating on.
+#' * **model_response** — the narrative asserted no change to variable X
+#'   but the projection's X moved anyway. If X is an endogenous variable
+#'   that MARTIN's structure forces to respond (e.g. NCR via the Taylor
+#'   Rule when LUR shifts), this is the model behaving as designed, not
+#'   a translation failure. The forecaster needs an additional AF on X
+#'   to suppress the response, or accept it.
+#'
+#' Classification is heuristic: scans the claim text for variable names
+#' and "no change" / "unchanged" patterns, then compares against the
+#' projection-vs-baseline diff for the candidate variable.
+#'
+#' @param audit       The tibble returned by
+#'   [compare_narrative_to_description()].
+#' @param projection  A projection tibble from [martin::solve_martin()].
+#' @param baseline    The baseline projection tibble.
+#' @return A tibble with the audit columns plus:
+#'   * `variable` — best-guess MARTIN variable the claim is about (or NA)
+#'   * `diff_at_end` — projection - baseline at horizon end on that variable
+#'   * `category` — one of `agree`, `not_addressed`, `translation_gap`,
+#'     `model_response`, `narrative_conflict`, `unclassified`
+#'   * `explanation` — short prose explaining the classification
+#' @export
+diagnose_audit <- function(audit, projection, baseline) {
+  stopifnot(
+    is.data.frame(audit),
+    is.data.frame(projection),
+    is.data.frame(baseline)
+  )
+  if (nrow(audit) == 0L) {
+    return(tibble::tibble(
+      claim = character(), status = character(), note = character(),
+      variable = character(), diff_at_end = double(),
+      category = character(), explanation = character()
+    ))
+  }
+
+  # Build a quick (variable, last quarter) diff lookup.
+  diff_lookup <- diff_at_horizon_end(projection, baseline)
+
+  # Variables we know how to look up (matches the headline glossary).
+  known_vars <- c("LUR", "TLUR", "NCR", "PTM", "P", "Y", "RC", "GNE",
+                  "LE", "LF", "RBR", "LPR", "NMR", "PI_E", "RSTAR")
+
+  rows <- lapply(seq_len(nrow(audit)), function(i) {
+    claim <- audit$claim[i]
+    status <- audit$status[i]
+    note <- audit$note[i]
+
+    # Quick exits for non-disagree statuses.
+    if (identical(status, "agree")) {
+      return(tibble::tibble(
+        claim = claim, status = status, note = note,
+        variable = NA_character_, diff_at_end = NA_real_,
+        category = "agree", explanation = "Audit accepted the claim."
+      ))
+    }
+    if (identical(status, "not_addressed")) {
+      return(tibble::tibble(
+        claim = claim, status = status, note = note,
+        variable = NA_character_, diff_at_end = NA_real_,
+        category = "not_addressed",
+        explanation = paste("Description doesn't address this claim",
+                            "(may be a causal/structural framing the",
+                            "describer didn't restate).")
+      ))
+    }
+
+    # disagree: try to identify the variable and classify.
+    variable <- detect_variable_in_claim(claim, known_vars)
+    asserts_no_change <- claim_asserts_no_change(claim)
+    diff <- if (!is.na(variable)) diff_lookup[[variable]] else NA_real_
+
+    category <- "unclassified"
+    explanation <- "Could not detect a variable in the claim."
+    if (!is.na(variable) && !is.null(diff)) {
+      if (asserts_no_change && abs(diff) > 1e-6) {
+        category <- "model_response"
+        explanation <- sprintf(
+          paste("Narrative asserted no change to %s but projection",
+                "moved it by %+.3f units. Likely a MARTIN endogenous",
+                "response (e.g. Taylor Rule / Phillips curve). Add an",
+                "AF on %s to suppress, or accept the move."),
+          variable, diff, variable
+        )
+      } else if (!asserts_no_change) {
+        category <- "translation_gap"
+        explanation <- sprintf(
+          paste("Narrative quantified a target on %s but the projection",
+                "shows diff %+.3f at horizon end. Magnitude / equation",
+                "choice likely needs revision."),
+          variable, diff
+        )
+      } else {
+        # asserts_no_change & diff ~ 0: audit shouldn't disagree.
+        category <- "narrative_conflict"
+        explanation <- paste("Claim's direction is unclear from the",
+                             "audit verdict alone; review manually.")
+      }
+    }
+
+    tibble::tibble(
+      claim = claim, status = status, note = note,
+      variable = variable %||% NA_character_,
+      diff_at_end = diff %||% NA_real_,
+      category = category,
+      explanation = explanation
+    )
+  })
+
+  out <- dplyr::bind_rows(rows)
+  attr(out, "overall_match") <- attr(audit, "overall_match")
+  out
+}
+
+# Pick the first known MARTIN variable that appears as a whole word in the
+# claim, preferring longer matches (TLUR before LUR) so we don't grab the
+# wrong one.
+detect_variable_in_claim <- function(claim, known_vars) {
+  if (!is.character(claim) || length(claim) != 1L) return(NA_character_)
+  # Order by descending name length so TLUR matches before LUR, etc.
+  ordered <- known_vars[order(-nchar(known_vars))]
+  for (v in ordered) {
+    pat <- sprintf("(?<![A-Z_])%s(?![A-Z_])", v)
+    if (grepl(pat, claim, perl = TRUE)) return(v)
+  }
+  # Also try plain-English keywords -> variable mapping.
+  keyword_map <- c(
+    "unemployment rate"     = "LUR",
+    "cash rate"             = "NCR",
+    "cash-rate"             = "NCR",
+    "policy rate"           = "NCR",
+    "inflation"             = "P",
+    "headline inflation"    = "P",
+    "trimmed-mean"          = "PTM",
+    "consumer prices"       = "P",
+    "real output"           = "Y",
+    "real gdp"              = "Y",
+    "gdp"                   = "Y",
+    "employment"            = "LE",
+    "labour force"          = "LF"
+  )
+  claim_lower <- tolower(claim)
+  for (kw in names(keyword_map)) {
+    if (grepl(kw, claim_lower, fixed = TRUE)) return(unname(keyword_map[kw]))
+  }
+  NA_character_
+}
+
+# True if the claim asserts no change / unchanged / steady-state. Catches
+# common wordings; not exhaustive.
+claim_asserts_no_change <- function(claim) {
+  if (!is.character(claim) || length(claim) != 1L) return(FALSE)
+  patterns <- c(
+    "no change",       "unchanged",      "no shift",
+    "constant",        "remain the same", "remain steady",
+    "stays? steady",   "stays? the same", "stays? constant",
+    "stays? at",       "stays? unchanged", "remains? unchanged",
+    "no movement",     "no impact on",    "no effect on",
+    "kept at",         "held at",         "hold(s|ing)? steady",
+    "no view change",  "no revision"
+  )
+  any(vapply(patterns, function(p) grepl(p, claim, ignore.case = TRUE,
+                                          perl = TRUE),
+             logical(1)))
+}
+
+# Build a (variable -> diff_at_horizon_end) named list.
+diff_at_horizon_end <- function(projection, baseline) {
+  q <- intersect(unique(projection$quarter), unique(baseline$quarter))
+  if (length(q) == 0L) return(list())
+  q_end <- max(q)
+  p <- projection[projection$quarter == q_end, c("variable", "value"),
+                  drop = FALSE]
+  b <- baseline[baseline$quarter == q_end, c("variable", "value"),
+                drop = FALSE]
+  joined <- merge(p, b, by = "variable", suffixes = c("_p", "_b"))
+  setNames(joined$value_p - joined$value_b, joined$variable)
+}

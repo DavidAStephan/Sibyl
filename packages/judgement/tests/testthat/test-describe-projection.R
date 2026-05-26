@@ -91,6 +91,99 @@ test_that("compare_narrative_to_description() rejects empty inputs", {
   )
 })
 
+# ---- diagnose_audit() ----------------------------------------------------
+
+test_that("diagnose_audit() classifies translation gaps vs model responses", {
+  audit <- tibble::tibble(
+    claim = c(
+      "Employment growth has been persistently stronger than the model predicts",
+      "Unemployment rate will fall by roughly 1.5 percentage points",
+      "No change to our view on the cash-rate path",
+      "No change to inflation outlook"
+    ),
+    status = c("agree", "disagree", "disagree", "disagree"),
+    note   = c("desc covers it", "actual diff smaller",
+               "NCR actually moved", "P actually moved")
+  )
+  attr(audit, "overall_match") <- "disagree"
+
+  baseline <- tibble::tibble(
+    variable = c("LUR", "NCR", "P"),
+    quarter  = "2025Q4",
+    value    = c(5.5, 1.5, 100),
+    scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = c("LUR", "NCR", "P"),
+    quarter  = "2025Q4",
+    value    = c(5.0, 5.3, 100.2),  # LUR -0.5pp (vs -1.5pp target),
+                                     # NCR +3.8pp, P +0.2%
+    scenario = "scenario"
+  )
+
+  out <- diagnose_audit(audit, projection, baseline)
+  expect_s3_class(out, "tbl_df")
+  expect_equal(nrow(out), 4L)
+  expect_setequal(
+    names(out),
+    c("claim", "status", "note", "variable", "diff_at_end",
+      "category", "explanation")
+  )
+  # agree pass-through
+  expect_equal(out$category[1], "agree")
+  # LUR: quantified target, missed -> translation_gap
+  expect_equal(out$variable[2], "LUR")
+  expect_equal(out$category[2], "translation_gap")
+  # NCR: "no change" but moved -> model_response
+  expect_equal(out$variable[3], "NCR")
+  expect_equal(out$category[3], "model_response")
+  # P/inflation: "no change" but moved -> model_response
+  expect_equal(out$variable[4], "P")
+  expect_equal(out$category[4], "model_response")
+  expect_equal(attr(out, "overall_match"), "disagree")
+})
+
+test_that("diagnose_audit() handles empty audit + unmatched variables", {
+  empty <- tibble::tibble(claim = character(), status = character(),
+                          note = character())
+  baseline   <- tibble::tibble(variable = "Y", quarter = "2025Q4",
+                                value = 100, scenario = "baseline")
+  projection <- tibble::tibble(variable = "Y", quarter = "2025Q4",
+                                value = 102, scenario = "scenario")
+  expect_equal(nrow(diagnose_audit(empty, projection, baseline)), 0L)
+
+  # Disagree with no recognizable variable -> unclassified.
+  weird <- tibble::tibble(
+    claim = "Something about widgets",
+    status = "disagree", note = "?"
+  )
+  attr(weird, "overall_match") <- "disagree"
+  out <- diagnose_audit(weird, projection, baseline)
+  expect_equal(out$category, "unclassified")
+  expect_true(is.na(out$variable))
+})
+
+test_that("diagnose_audit() detects variables via plain-English keywords", {
+  audit <- tibble::tibble(
+    claim = c("No change to the policy rate",
+              "Headline inflation stays steady"),
+    status = c("disagree", "disagree"),
+    note   = c("rate moved", "prices moved")
+  )
+  attr(audit, "overall_match") <- "disagree"
+  baseline <- tibble::tibble(
+    variable = c("NCR", "P"), quarter = "2025Q4",
+    value = c(2, 100), scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = c("NCR", "P"), quarter = "2025Q4",
+    value = c(2.5, 100.3), scenario = "scenario"
+  )
+  out <- diagnose_audit(audit, projection, baseline)
+  expect_equal(out$variable, c("NCR", "P"))
+  expect_equal(out$category, c("model_response", "model_response"))
+})
+
 # Live tests
 test_that("describe_projection() round-trips with live Anthropic Claude", {
   skip_if(Sys.getenv("ANTHROPIC_API_KEY") == "",
