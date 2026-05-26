@@ -21,12 +21,12 @@ Status as of the last commit:
 
 | Item | Status |
 |---|---|
-| Test suite | 458 pass, 0 fail (~16 skip; live-API tests that need keys) |
+| Test suite | 474 pass, 0 fail (~16 skip; live-API tests that need keys) |
 | Pipeline `tar_make()` (live default) | 19/19 targets, ~6m 50s cold (live data fetch dominates) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
 | Live database vs fixture coverage | 100 % of the fixture's 205 vars (live data + dummies/scalars + fixture fallback for long-history series) |
-| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Pipeline includes (a) sensitivity matrix per equation, (b) iterative-refinement loop, (c) best-iter selection. LUR narrative hits magnitude target on iter 1 (LUR -1.28pp realised vs -1.5pp narrative). ~1m32s wall clock cold; ~30s of that is the sensitivity matrix build |
-| Round report | renders to `reports/round.html` |
+| End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Pipeline includes (a) sensitivity matrix per equation, (b) iterative-refinement loop with best-iter selection, (c) Sonnet 4.6 for propose/refine + Haiku for describe/audit, (d) `diagnose_audit()` classifies each disagree claim as translation gap vs model response. LUR narrative reaches `partial` audit on iter 3 (Sonnet figures out NCR canceller). ~3m47s wall clock cold; sensitivity matrix is ~30s of that. |
+| Round report | renders to `reports/round.html`; includes a "narrative coherence diagnostics" section telling apart translation gaps from inevitable MARTIN endogenous responses |
 
 ---
 
@@ -91,34 +91,7 @@ if Quarto isn't on PATH.
 Ranked by leverage. Each item is independent — pick whichever you have
 appetite for.
 
-### 1. Sensitivity-matrix follow-ups (~½ session)
-
-The matrix is shipping and the LUR narrative converges on iter 1, but
-three follow-ups would harden it:
-
-**a) Upgrade propose-step from Haiku → Sonnet 4.6.** Haiku is observed
-to occasionally ignore the matrix's "linear scaling" hint and still
-guess magnitudes. Sonnet is plausibly more decisive at the same cost
-class. One test round to confirm. Change in `_targets.R` →
-`refined_round` → `propose_with_refinement(model = "claude-sonnet-4-6")`.
-
-**b) Dynamic shock window.** `sensitivity_matrix()` currently fixes
-`shock_start = "2020Q1"` so h+16 lands at 2024Q1 — fine for our
-horizon ending 2025Q4. If `estimation_end` ever pushes the horizon
-later, h+16 falls outside the projection window and entries get
-dropped. Compute `shock_start` dynamically as `horizon[2] - 17 quarters`
-so the longest offset always fits.
-
-**c) Distinguish "narrative inconsistent" from "translation error" in
-the report.** The LUR narrative's audit flags `disagree` on the
-cash-rate / inflation claims, but those are unavoidable MARTIN
-responses to a 1.5pp labour-market shock — not translation errors.
-Add a "narrative coherence" section to `reports/round.qmd` that
-highlights claims marked disagree where the projection effect is in
-the expected direction (Taylor Rule cut after looser labour market).
-This requires the report to *interpret* the audit, not just print it.
-
-### 2. RSTAR full-port accuracy (~½–1 session)
+### 1. RSTAR full-port accuracy (~½–1 session)
 
 `fit_rstar_kfas_full` is **stable** on live data (fixed-prior
 structural params via `RSTAR_FULL_PARAMS` produce live values in the
@@ -143,7 +116,7 @@ Opt-in via `SIBYL_RSTAR_FULL_PORT=TRUE`. Useful right now for the
 auxiliary states (YGAP, YPOT, G, Z) that the simple smoother doesn't
 expose.
 
-### 3. Faithful state-space accuracy across PI_E / TLUR / RSTAR (~1 session)
+### 2. Faithful state-space accuracy across PI_E / TLUR / RSTAR (~1 session)
 
 The faithful PI_E and TLUR ports trade a few correlation points
 against the fixture for closer structural fidelity (PI_E cor ~ 0.8,
@@ -152,7 +125,7 @@ is the priority, the OLS-pre-est step can be replaced with
 EViews-published parameter values (when available) or with joint MLE
 across all three trends.
 
-### 4. Nowcast bridges into the pipeline default (~¼ session)
+### 3. Nowcast bridges into the pipeline default (~¼ session)
 
 `nowcast::nowcast_handover(method = "bridge_monthly", ...)` works and
 the live demo (`scripts/monthly_bridge_demo.R`) shows it lifts
@@ -162,7 +135,7 @@ when monthly indicators are fresher than quarterly ones (or just
 always — bridge falls back to ARIMA gracefully when no indicator data
 is mapped).
 
-### 5. Catalogue gap items (~¼ session)
+### 4. Catalogue gap items (~¼ session)
 
 A handful of derived rows still can't materialise because their
 inputs aren't in the catalogue:
@@ -175,12 +148,12 @@ inputs aren't in the catalogue:
 - **`PAE`** — needs `LHPP` (hours per person). Legacy code computes
   `hours / le * 3` then `lhpp_hist = hours_hist / le_hist` backcast.
 
-### 6. `fetch_oecd` for trading-partner-weighted world variables (~½ session)
+### 5. `fetch_oecd` for trading-partner-weighted world variables (~½ session)
 
 WY / WP / WPX currently use FRED US proxies. Real OECD trading-partner
 weights would be cleaner. Lowest priority — proxies work.
 
-### 7. Multi-round narrative coherence test (~¼ session)
+### 6. Multi-round narrative coherence test (~¼ session)
 
 Run three different narratives back-to-back through the pipeline
 (sticky inflation, labour-market gap, capex slowdown) and confirm that
@@ -319,6 +292,12 @@ For canonical history use `git log`. Major landed workstreams:
   - Sensitivity matrix + threading into propose/refine prompts.
   - Iterative refinement loop with best-iter selection
     (`propose_with_refinement()`).
+  - Per-step model overrides (`model_propose` / `model_describe` /
+    `model_audit`) — pipeline default is Sonnet 4.6 for propose +
+    Haiku for the rest.
+  - `diagnose_audit()` classifies disagree claims as `translation_gap`
+    vs `model_response` vs `not_addressed`; surfaced in the round
+    report's "Narrative coherence diagnostics" section.
   - Few-shot worked examples + variable glossary in the propose prompt.
   - Blind describer + clearer rate-vs-level units in `diff_text`.
   - ellmer shape/factor handling fixes (tibble vs list, factors).
