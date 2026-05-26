@@ -992,7 +992,10 @@ RSTAR_FULL_PARAMS <- list(
   alpha_1 = 0.85,
   alpha_2 = 0.0,
   alpha_3 = 0.1,
-  beta_1  = -0.3,
+  # Okun's-law slope. -0.5 (cf. -0.3 v0) disentangles ygap from NAIRU
+  # more sharply, letting the smoother attribute the same LUR variation
+  # to a smaller NAIRU shift. Closer to rstar.prg's posterior mode.
+  beta_1  = -0.5,
   gamma_1 = 0.5,
   gamma_2 = -0.1
 )
@@ -1043,23 +1046,20 @@ fit_rstar_kfas_full <- function(database, sample_start = "1986Q3",
   start_idx <- ts_meta$quarter_index(sample_start)
   if (is.na(start_idx) || start_idx < 1L) start_idx <- 1L
 
-  # ---- HP-like smoothed proxies (centred MA) for pre-estimation ----
-  smooth_ma <- function(x, win = 20L) {
-    out <- stats::filter(x, rep(1 / win, win), sides = 2)
-    out <- as.numeric(out)
-    nonna <- which(!is.na(out))
-    if (length(nonna) >= 1L) {
-      out[seq_len(nonna[1] - 1L)] <- out[nonna[1]]
-      tlast <- tail(nonna, 1L)
-      if (tlast < length(out)) out[(tlast + 1L):length(out)] <- out[tlast]
-    }
-    out
-  }
-  ypot_init <- smooth_ma(lrgdp)
-  ygap_init <- lrgdp - ypot_init
-  nairu_init <- smooth_ma(lur)
-  nrate_init <- smooth_ma(rcash)
-  g_init     <- smooth_ma(c(NA, diff(ypot_init)))
+  # ---- HP-filtered proxies for pre-estimation ----
+  # Lambda=1600 is the canonical quarterly choice (Hodrick-Prescott 1980).
+  # Better-behaved than the prior centred-MA proxy: avoids the boundary
+  # flat-lining that a window-20 MA produces near sample edges, and
+  # gives a less-noisy gap (gap = data - HP trend) closer to what
+  # rstar.prg's posterior smoother converges to. KFAS's own
+  # SSMtrend(degree=2) is mathematically equivalent for the right Q,
+  # but here we just need an initial-state proxy, so the closed-form
+  # solution is cheaper.
+  ypot_init  <- hp_filter(lrgdp,                   lambda = 1600)
+  ygap_init  <- lrgdp - ypot_init
+  nairu_init <- hp_filter(lur,                     lambda = 1600)
+  nrate_init <- hp_filter(rcash,                   lambda = 1600)
+  g_init     <- hp_filter(c(NA, diff(ypot_init)),  lambda = 1600)
   z_init     <- nrate_init - g_init
 
   # ---- Structural parameters: default to baked-in priors, optionally
@@ -1306,6 +1306,40 @@ fit_rstar_kfas_full <- function(database, sample_start = "1986Q3",
     G     = pick("g"),
     Z     = pick("z")
   )
+}
+
+# Hodrick-Prescott filter (closed form). Solves
+#   min_tau  sum_t (y_t - tau_t)^2  +  lambda * sum_t (Δ²tau_t)^2
+# via tau = (I + lambda D'D)^{-1} y, where D is the (n-2 x n) second-
+# difference matrix. Lambda=1600 is the canonical quarterly choice.
+#
+# Handles NAs by linear interpolation before filtering. Internal helper
+# used as initial-state seed for fit_rstar_kfas_full() and related
+# state-space estimators.
+hp_filter <- function(y, lambda = 1600) {
+  n <- length(y)
+  if (n < 4L) return(as.numeric(y))
+  y <- as.numeric(y)
+  if (all(is.na(y))) return(y)
+
+  # Linear-interpolate NAs (extending the last/first observation outward)
+  # before solving the smoothing problem.
+  if (any(is.na(y))) {
+    y_filled <- stats::approx(seq_along(y), y, seq_along(y), rule = 2)$y
+  } else {
+    y_filled <- y
+  }
+
+  # Build the (n-2) x n second-difference matrix as a sparse-ish dense
+  # matrix (n is at most ~250 in SIBYL use, so dense is fine).
+  D <- matrix(0, n - 2L, n)
+  for (k in seq_len(n - 2L)) {
+    D[k, k]      <-  1
+    D[k, k + 1L] <- -2
+    D[k, k + 2L] <-  1
+  }
+  tau <- solve(diag(n) + lambda * crossprod(D), y_filled)
+  as.numeric(tau)
 }
 
 # Internal: extract the bimets ts metadata needed to round-trip a numeric
