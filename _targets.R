@@ -167,14 +167,13 @@ list(
   # ---------------------------------------------------------------------------
   tar_target(sensitivity_matrix,
     martin::sensitivity_matrix(
-      database       = database_with_handover,
-      baseline       = baseline,
-      horizon        = horizon,
-      estimation_end = estimation_end,
-      shock_start    = "2020Q1",
-      shock_quarters = 4L,
+      database        = database_with_handover,
+      baseline        = baseline,
+      horizon         = horizon,
+      estimation_end  = estimation_end,
+      shock_quarters  = 4L,
       measure_offsets = c(1L, 4L, 8L, 16L),
-      progress       = FALSE
+      progress        = FALSE
     )
   ),
 
@@ -211,7 +210,11 @@ list(
         max_iters          = 3L,
         round_id           = round_id,
         sensitivity_matrix = sensitivity_matrix,
-        model              = "claude-haiku-4-5"
+        model              = "claude-haiku-4-5",
+        # Sonnet 4.6 is more decisive on the token-heavy propose/refine
+        # step (catalogue + sensitivity matrix in-context); describe and
+        # audit stay on Haiku because they're cheap simple-text tasks.
+        model_propose      = "claude-sonnet-4-6"
       )
     } else {
       message("[targets] ANTHROPIC_API_KEY not set; ",

@@ -21,8 +21,10 @@
 #'   re-estimated through this quarter before the shocks (same convention as
 #'   [solve_martin()]). NULL = frozen model coefficients.
 #' @param shock_start  `"yyyyQq"` for the first quarter of the sustained
-#'   shock. Defaults to `horizon[1]`. Choose a quarter where the projection
-#'   has meaningful forward propagation (e.g. just after `estimation_end`).
+#'   shock. Default `NULL` derives it dynamically as
+#'   `horizon[2] - max(measure_offsets)` so the longest offset always
+#'   lands inside the horizon. Override to a specific quarter if you want
+#'   the propagation measured against a particular regime.
 #' @param shock_quarters Integer length of the sustained shock. Default 4.
 #' @param measure_offsets Integer vector of quarter offsets from `shock_start`
 #'   at which to record deviations. Default `c(1, 4, 8, 16)`.
@@ -43,7 +45,7 @@ sensitivity_matrix <- function(database,
                                baseline,
                                horizon,
                                estimation_end  = NULL,
-                               shock_start     = horizon[1],
+                               shock_start     = NULL,
                                shock_quarters  = 4L,
                                measure_offsets = c(1L, 4L, 8L, 16L),
                                targets         = c("Y", "RC", "GNE", "LUR",
@@ -59,6 +61,15 @@ sensitivity_matrix <- function(database,
   )
   shock_quarters <- as.integer(shock_quarters)
   measure_offsets <- as.integer(measure_offsets)
+
+  # If shock_start unset, derive it so the largest measure_offset lands at
+  # or before horizon[2]. This keeps every entry in-window when the horizon
+  # is short and gives the LLM the freshest possible propagation when the
+  # horizon extends. (Earlier shock_start = horizon[1] was fine for our
+  # current 2010-2025 horizon but dropped h+16 entries when horizon shifted.)
+  if (is.null(shock_start)) {
+    shock_start <- quarter_minus(horizon[2], max(measure_offsets))
+  }
 
   cat <- equation_catalogue()
   adj <- cat[isTRUE_vec(cat$adjustable), , drop = FALSE]
@@ -210,6 +221,15 @@ isTRUE_vec <- function(x) !is.na(x) & as.logical(x)
 quarter_offsets <- function(start, n_after) {
   s <- judgement_parse_quarter(start)
   abs_q <- s$year * 4L + (s$quarter - 1L) + seq.int(0L, n_after)
+  year    <- abs_q %/% 4L
+  quarter <- (abs_q %% 4L) + 1L
+  sprintf("%04dQ%d", year, quarter)
+}
+
+# Subtract n quarters from a "yyyyQq" string.
+quarter_minus <- function(start, n) {
+  s <- judgement_parse_quarter(start)
+  abs_q <- s$year * 4L + (s$quarter - 1L) - as.integer(n)
   year    <- abs_q %/% 4L
   quarter <- (abs_q %% 4L) + 1L
   sprintf("%04dQ%d", year, quarter)

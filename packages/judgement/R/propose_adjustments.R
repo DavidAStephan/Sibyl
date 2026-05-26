@@ -237,8 +237,15 @@ format_audit_table <- function(audit) {
 #'   projection tibble. Typically a closure over a database + horizon.
 #' @param max_iters Max number of total iterations (initial + refinements).
 #'   Default 3 - one initial propose + up to two refinements.
-#' @param round_id,owner,model,historical_afs   Forwarded to
-#'   [propose_adjustments()].
+#' @param round_id,owner,historical_afs,sensitivity_matrix Forwarded to
+#'   [propose_adjustments()] / [refine_adjustments()].
+#' @param model  Default Anthropic model identifier. Used when a more
+#'   specific `model_*` argument is not provided.
+#' @param model_propose,model_describe,model_audit  Per-step model
+#'   overrides. The propose/refine step is the most token-heavy (full
+#'   catalogue + sensitivity matrix + narrative); describe/audit are
+#'   cheap. Typical config: `model_propose = "claude-sonnet-4-6"`,
+#'   `model = "claude-haiku-4-5"` to keep describe + audit on Haiku.
 #' @param chat An `ellmer::Chat` object (for testing).
 #' @return A list with:
 #'   * `adjustments`: the final `adjustment_list`.
@@ -256,12 +263,20 @@ propose_with_refinement <- function(narrative,
                                     historical_afs     = NULL,
                                     sensitivity_matrix = NULL,
                                     model              = "claude-opus-4-7",
+                                    model_propose      = NULL,
+                                    model_describe     = NULL,
+                                    model_audit        = NULL,
                                     chat               = NULL) {
   stopifnot(
     is.character(narrative), length(narrative) == 1L, nzchar(narrative),
     is.function(solve_fn),
     is.numeric(max_iters), max_iters >= 1L
   )
+  # Per-step model overrides default to `model`. Allows e.g. Sonnet for the
+  # token-heavy propose/refine step, Haiku for the cheap describe/audit.
+  model_propose  <- model_propose  %||% model
+  model_describe <- model_describe %||% model
+  model_audit    <- model_audit    %||% model
 
   history <- list()
   adjustments <- propose_adjustments(
@@ -271,13 +286,12 @@ propose_with_refinement <- function(narrative,
     owner              = owner,
     historical_afs     = historical_afs,
     sensitivity_matrix = sensitivity_matrix,
-    model              = model,
+    model              = model_propose,
     chat               = chat
   )
 
   for (iter in seq_len(as.integer(max_iters))) {
     if (length(adjustments) == 0L) {
-      # Nothing to solve; record an empty iteration and exit.
       history[[iter]] <- list(
         iteration = iter, adjustments = adjustments,
         projection = NULL, description = NULL, audit = NULL
@@ -286,11 +300,12 @@ propose_with_refinement <- function(narrative,
     }
     projection <- solve_fn(adjustments)
     description <- describe_projection(
-      projection = projection, baseline = baseline, model = model, chat = chat
+      projection = projection, baseline = baseline,
+      model = model_describe, chat = chat
     )
     audit <- compare_narrative_to_description(
       narrative = narrative, description = description,
-      model = model, chat = chat
+      model = model_audit, chat = chat
     )
     history[[iter]] <- list(
       iteration = iter, adjustments = adjustments,
@@ -309,7 +324,7 @@ propose_with_refinement <- function(narrative,
         round_id           = round_id,
         owner              = owner,
         sensitivity_matrix = sensitivity_matrix,
-        model              = model,
+        model              = model_propose,
         chat               = chat
       )
     } else {
