@@ -77,24 +77,25 @@ list(
   # or read from `narrative.txt` if you prefer.
   tar_target(narrative,
     paste(
-      "Employment growth has been persistently stronger than the model",
-      "predicts since the post-COVID reopening - possibly reflecting",
-      "structural changes in labour-force attachment (long-COVID exits,",
-      "care-economy growth, immigration composition). We expect this to",
-      "persist, lowering the unemployment rate by roughly 1.5 percentage",
-      "points below baseline through 2025Q4. No change to our view on",
-      "the cash-rate path or inflation."
+      "We expect Australian employment growth to outpace the baseline",
+      "model over the coming two years, reflecting persistent structural",
+      "labour-supply tightness (long-COVID exits, care-economy demand,",
+      "immigration composition). Unemployment runs roughly 1 percentage",
+      "point below baseline from 2026Q2 onward, drifting further by",
+      "end-2027. Cash-rate path is broadly unchanged; trimmed-mean",
+      "inflation is consistent with the RBA's 2-3% target band."
     )
   ),
 
-  # Solve horizon. Extended to cover the latest National Accounts
-  # release (2025Q4) now that the merge correctly coalesces live data
-  # past the fixture's 2019Q3 cutoff. MARTIN's behavioural-equation
-  # estimation samples still end 2019Q3 (frozen-coefficient design),
-  # but the solve itself produces in-sample backcasts through the
-  # available data and projects forward from there. Future-horizon
-  # support (DESIGN.md item 7) is needed to extend past the data end.
-  tar_target(horizon, c("2010Q1", "2025Q4")),
+  # Solve horizon. Goes ~2.5 years past the data end, so the second
+  # half of the run is a genuine endogenous projection (MARTIN solving
+  # forward from the last quarter of hard data). Exogenous variables
+  # are carried forward via `extend_exogenous()` so SIMULATE has a
+  # value for every cell in TSRANGE. The judgement layer should place
+  # AFs in this projection period (2026Q1 onward) to translate a
+  # forecaster's narrative about the future into model-consistent
+  # numbers.
+  tar_target(horizon, c("2010Q1", "2028Q2")),
 
   # Re-estimation sample end. Behaviorals re-fit on data through this
   # quarter (overriding the model file's 2019Q3 default). Set to NULL to
@@ -210,8 +211,13 @@ list(
       baseline        = baseline,
       horizon         = horizon,
       estimation_end  = estimation_end,
+      # Anchor shocks at the start of the projection period (just after
+      # the last hard data) so the LLM sees forecast-period propagation
+      # rather than in-sample backcast propagation. measure_offsets are
+      # cropped to what fits the remaining horizon.
+      shock_start     = "2026Q1",
       shock_quarters  = 4L,
-      measure_offsets = c(1L, 4L, 8L, 16L),
+      measure_offsets = c(1L, 4L, 8L),
       progress        = FALSE
     )
   ),

@@ -75,11 +75,17 @@ HEADLINE_KIND <- c(
 )
 
 DEFAULT_NARRATIVE <- paste(
-  "Services inflation has been persistently sticky in our latest data.",
-  "We think trimmed-mean inflation stays roughly 0.1 percentage points",
-  "higher than baseline through 2025Q2, fading thereafter as labour-",
-  "market slack opens up. No change to our view on the cash-rate path."
+  "We expect Australian services inflation to remain sticky over the",
+  "forecast horizon. Trimmed-mean inflation runs roughly 0.2 percentage",
+  "points above baseline from 2026Q2 through 2027Q2, fading thereafter",
+  "as labour-market conditions ease. The cash-rate path responds",
+  "endogenously through the model's Taylor Rule."
 )
+
+# Quarter where the genuine projection period begins (just past the last
+# quarter of hard data). Used as a visual reference on charts and as the
+# typical anchor for forecast-period add-factors.
+PROJECTION_START <- "2026Q1"
 
 # Brand palette - inspired by FT/BBG/RBA chart conventions.
 COL_INK       <- "#0e1e2c"   # deep ink for text + axes
@@ -739,9 +745,9 @@ server <- function(input, output, session) {
       dplyr::filter(qdate >= as.Date("2018-01-01"))
 
     if (input$chart_view == "yoy") {
-      subtitle <- "Year-on-year change (% for levels, pp for rates; NCR shown as level)"
+      subtitle <- "Year-on-year change (% for levels, pp for rates; NCR shown as level). Dashed vertical = projection start."
     } else {
-      subtitle <- "Quarterly levels"
+      subtitle <- "Quarterly levels. Dashed vertical = projection start."
     }
 
     df$tooltip <- sprintf(
@@ -749,8 +755,15 @@ server <- function(input, output, session) {
       df$quarter, df$label, df$value_view, df$unit_view, df$series
     )
 
+    # Vertical reference at the start of the genuine projection
+    # period (just past the last quarter of hard data).
+    proj_start <- quarter_to_date(PROJECTION_START)
+
     p <- ggplot(df, aes(x = qdate, y = value_view, colour = series,
                         group = series, text = tooltip)) +
+      geom_vline(xintercept = as.numeric(proj_start),
+                 linetype = "dashed", colour = COL_ACCENT,
+                 linewidth = 0.4, alpha = 0.7) +
       geom_line(linewidth = 0.7) +
       facet_wrap(~ label, scales = "free_y", ncol = 4) +
       scale_colour_manual(values = c(baseline = COL_BASELINE,
