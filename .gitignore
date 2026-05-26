@@ -29,7 +29,11 @@ _targets_r/
 /site_libs/
 
 # Built docs and reports
-/docs/
+/docs/_book/
+/docs/_site/
+/docs/*.html
+/docs/*.pdf
+/docs/*_files/
 reports/_book/
 reports/*.html
 reports/*.pdf

@@ -181,18 +181,26 @@ package.
 This is the most important structural feature of SIBYL. The full path is:
 
 1. Human writes a narrative.
-2. LLM proposes `adjustment_list` (with rationales and `expected_effect`).
+2. LLM proposes `adjustment_list` (with rationales and `expected_effect`),
+   informed by a pre-computed **sensitivity matrix** that shows the
+   propagation of a standardised unit shock on each adjustable equation.
 3. Human reviews the proposal as a table — accepts, edits, or rejects.
 4. `martin::solve_martin()` produces a projection.
-5. LLM reads the projection and the original narrative; drafts a description
-   of how the projection differs from baseline.
-6. Comparison: does step 5 say the same thing as step 1? If not, the
-   translation has failed somewhere — bad equation choice, miscalibrated
-   magnitude, or unanticipated cross-equation interaction.
+5. LLM reads the projection and (deliberately blind to the narrative)
+   drafts a description of how the projection differs from baseline.
+6. A second LLM step compares narrative against description; if any
+   claim disagrees, an automated **refinement loop** re-prompts the
+   LLM with the audit feedback, capped at three iterations.
+7. A **diagnostic classifier** (`diagnose_audit()`) labels each
+   disagree claim as either a `translation_gap` (wrong equation or
+   magnitude — the loop should fix it) or a `model_response`
+   (narrative is over-constrained against MARTIN's structure — the
+   forecaster needs to accept the trade-off or add a cancelling AF).
 
 The check is mechanical (compare expected_effect to actual change) and
-narrative (does the LLM's description match the human's narrative). Both are
-surfaced in the round report.
+narrative (does the LLM's description match the human's narrative). Both
+are surfaced in the round report. **See [docs/llm_layer.md](docs/llm_layer.md)
+for the full implementation walkthrough with a worked example.**
 
 ## Why public data only
 

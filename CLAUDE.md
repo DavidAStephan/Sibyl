@@ -28,6 +28,10 @@ namespaced:
 Pipeline orchestration lives in [_targets.R](_targets.R). Reports are Quarto
 documents under [reports/](reports/).
 
+The full LLM-layer architecture (propose / describe / audit / refine, the
+sensitivity matrix, the diagnostic classifier, worked examples) is
+documented in detail at [docs/llm_layer.md](docs/llm_layer.md).
+
 ## Design principles to enforce
 
 1. **The LLM does not forecast.** Anything that looks like the model

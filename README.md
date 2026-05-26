@@ -72,19 +72,36 @@ You'll need R ≥ 4.3, a recent Quarto, and the API keys listed in
 [.Renviron.example](.Renviron.example) (FRED is required; Anthropic is required
 for the judgement module).
 
-## What's in the box right now
+## What's in the box
 
-This repo is **scaffolding only**. Modules contain stubs, not implementations.
-The first session to follow will:
+The pipeline runs end-to-end. A round goes:
 
-1. Build out the add-factor S3 class in `judgement` (constructor + validator + tests).
-2. Wire `martin::solve_martin()` against the bundled `MARTINDATA_XLSX` fixture in
-   `packages/martin/inst/extdata/` and pass a regression test that solves with no
-   adjustments and matches the bimets reference.
-3. Then `sibyldata`, then `nowcast`, then `judgement` proper.
+1. **Data** — `sibyldata::update_data()` pulls live ABS, RBA, FRED, OECD,
+   World Bank, and BoM panels, splices them onto MARTIN's variable schema,
+   and applies derived formulas + identity chains + state-space-smoothed
+   trends (PI_E, TLUR, RSTAR).
+2. **Nowcast** — `nowcast::nowcast_handover()` bridges the ragged edge
+   between the last quarterly observation and the projection start using
+   monthly indicators (`bridge_monthly`) with ARIMA fallback.
+3. **Baseline solve** — `martin::solve_martin()` runs `bimets::SIMULATE`
+   against MARTIN with no add-factors, optionally re-estimating
+   coefficients through a user-specified quarter.
+4. **Sensitivity pre-compute** — `martin::sensitivity_matrix()`
+   simulates a standardised unit shock on each of the 56 adjustable
+   equations once, recording propagation onto headline aggregates.
+5. **LLM round** — `judgement::propose_with_refinement()` does the
+   agentic loop: propose add-factors against the narrative + sensitivity
+   matrix, solve, describe (blind), audit, refine if needed, pick the
+   best iteration.
+6. **Report** — `reports/round.qmd` renders the full round with
+   narrative coherence diagnostics.
+
+The LLM-layer architecture is documented in
+[docs/llm_layer.md](docs/llm_layer.md) with a worked example.
 
 See [DESIGN.md](DESIGN.md) for the longer architectural story and
 [CLAUDE.md](CLAUDE.md) for context to load into a coding session.
+[next_session.md](next_session.md) is the live TODO list.
 
 ## Relationship to the reference repos
 
