@@ -10,6 +10,36 @@ test_that("series_catalogue() loads cleanly with expected columns", {
   expect_gt(nrow(cat), 50L)  # institutional knowledge is non-trivial
 })
 
+test_that("series_catalogue() parses with zero readr problems", {
+  # Guards against unquoted commas inside formula / description fields,
+  # which silently shift columns and mangle rows (e.g. the D_OLYX Olympics
+  # dummy, and the RBR / IBNDRA formulas with TSLAG(x, n) lag arguments).
+  cat <- series_catalogue()
+  problems <- readr::problems(cat)
+  expect_equal(nrow(problems), 0L,
+               info = paste("readr parse problems on rows:",
+                            paste(problems$row, collapse = ", ")))
+  # Every column must be present and all ten fields populated per row.
+  expect_equal(ncol(cat), 10L)
+})
+
+test_that("every non-NA catalogue formula is a parseable R expression", {
+  # A quoting bug truncates a formula mid-expression; a truncated formula
+  # fails to parse, so this catches the regression directly on content.
+  cat <- series_catalogue()
+  formulas <- cat$formula[!is.na(cat$formula)]
+  expect_gt(length(formulas), 0L)
+  unparseable <- formulas[!vapply(formulas, function(s) {
+    tryCatch({
+      parse(text = s)
+      TRUE
+    }, error = function(e) FALSE)
+  }, logical(1))]
+  expect_equal(length(unparseable), 0L,
+               info = paste("unparseable formulas:",
+                            paste(unparseable, collapse = " | ")))
+})
+
 test_that("catalogue source values are from the allowed enum", {
   cat <- series_catalogue()
   allowed <- c("abs", "rba", "fred", "oecd", "worldbank", "bom", "derived")

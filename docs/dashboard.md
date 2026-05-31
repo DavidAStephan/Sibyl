@@ -210,9 +210,14 @@ The dashboard runs a one-shot LLM round. It does NOT:
 - Re-fetch data (uses the cached `database_with_handover`).
 - Re-build the sensitivity matrix (uses the cached one).
 - Re-solve the baseline (uses the cached one).
-- Apply a human-in-the-loop approval step (the
-  `review_and_approve()` gate is bypassed — what the LLM proposes
-  is what gets solved).
+- Apply a human-in-the-loop approval step. `review_and_approve()` is
+  interactive by default (`interactive = base::interactive()`), but the
+  dashboard deliberately runs it non-interactively — what the LLM proposes is
+  what gets solved — because a browser session has no R console to block on
+  the CSV edit. The deterministic `mechanical_audit()` still runs, so a
+  wrong-direction add-factor is still flagged. For a gated round with the
+  add-factor table edited by hand, use the targets pipeline with the
+  `approved_adjustments` target set to `interactive = TRUE`.
 
 For a full production round (fresh data + interactive approval +
 report rendering), use `just pipeline` followed by `just report`.

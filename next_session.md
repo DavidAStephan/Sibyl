@@ -24,8 +24,8 @@ Status as of the last commit:
 | Test suite | 553 pass, 0 fail (~11 skip; live-API tests that need keys) |
 | Pipeline `tar_make()` (live default) | 21/21 targets, ~8m cold (live data fetch + sensitivity matrix dominate) |
 | Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
-| Live database vs fixture coverage | 100 % of the fixture's 205 vars (live + dummies/scalars + fixture fallback for long-history series) |
-| Nowcast handover | bridge_monthly default (RC←RT, Y←HOURS, LE←LE); ARIMA fallback for unmapped targets |
+| Live database vs fixture coverage | every fixture var is populated, but via a mix of source classes — read the provenance manifest (`database_provenance(db)`: `live` / `fixture_fallback` / `vendored_wf1` / `proxy` / `dummy` / `derived`), not a single "100%" headline. Live path supplies ~113 of 205; the rest are dummies/scalars/state-space-wf1/proxy/fixture-fallback. "vintage" is a fetch-date stamp, not point-in-time. |
+| Nowcast handover | bridge_monthly default on growth rates (RC←RT, Y←HOURS, LE←LE); ARIMA fallback for unmapped targets. Committed backtest: bridge MAPE 9.8% / 82% within 5% on the fixture (`packages/nowcast/inst/eval/handover_backtest.md`) |
 | End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Sensitivity matrix → propose (Sonnet 4.6) → solve → describe (Haiku) → audit (Haiku) → refine if disagree, repeat; best-iter selection. `diagnose_audit()` separates translation gaps from inevitable MARTIN endogenous responses. Multi-narrative coherence test confirms distinct equations per narrative. |
 | Round report | renders to `reports/round.html` including "narrative coherence diagnostics" |
 
@@ -244,9 +244,17 @@ CLAUDE.md                        ← context for sessions
 - **MARTINMOD_AF.txt warns "outdated BIMETS version".** Harmless;
   muffled in `martin::utils.R`'s `.suppress_bimets_version_warning()`.
 
-- **bimets warns "NaNs produced" during ESTIMATE.** Also harmless —
-  comes from computing SER on imposed-coefficient (`c1=1`) equations
-  where SSR ≈ 0. Don't blanket-suppress.
+- **`bimets::ESTIMATE` runs on every `load_martin()`.** MARTINMOD_AF.txt
+  has 95 `BEHAVIORAL>` equations; only ~51 carry `RESTRICT> c1=1`, the rest
+  impose real cross-coefficient restrictions (`c4+c5+c6+c7=1`, `c4=0.5`, ...)
+  with free coefficients that get re-fit. "Frozen" = keep the file's embedded
+  2019Q3 `TSRANGE` so the re-fit reproduces the published values; it is NOT
+  "load published EViews numbers, skip estimation". `coefficients =
+  "reestimated"` + `estimation_end` rewrites that TSRANGE.
+
+- **bimets warns "NaNs produced" during ESTIMATE.** Harmless — comes from
+  computing SER on the `c1=1`-restricted equations (the ~51 with that
+  restriction) where SSR ≈ 0. Don't blanket-suppress.
 
 - **Live ABS / RBA series often have shorter history than the fixture.**
   `merge_with_fallback()` prefers whichever source has more history.
@@ -307,10 +315,29 @@ For canonical history use `git log`. Major landed workstreams:
   - Blind describer + clearer rate-vs-level units in `diff_text`.
   - ellmer shape/factor handling fixes (tibble vs list, factors).
   - Round-trip audit catches narrative-vs-model inconsistencies.
+  - `mechanical_audit()` — LLM-independent fidelity gate: checks each
+    adjustment's declared `target_variable` / `expected_direction` against the
+    realised projection-minus-baseline diff. Run alongside `diagnose_audit()`.
+  - Default `adjustment()` tail is now **`carry`** (was `decay_50`).
+    `decay_50` mirrors the EViews `_a(-1)*-0.5` *historical-residual* rule and
+    oscillates sign as a sustained-shock tail, so it's no longer the default.
+  - Add-factor guardrails: `validate_adjustment_bounds()` caps `|value|` per
+    unit (`log_diff<=0.02`, `level<=1.0`, `percent<=5.0`/qtr) and horizon
+    `<=60` qtrs; override via `options(sibyl.af_ceiling=)` /
+    `options(sibyl.af_horizon_ceiling=)`.
+  - Human gate restored (design principle #4): `review_and_approve()` defaults
+    `interactive = base::interactive()`, writes a review CSV with a hidden
+    stable `adjustment_id`, and round-trips the `exogenize` list through a
+    sidecar (`paste0(csv_path, ".exogenize")`) so it survives a human edit.
 
 - **Live data + database construction:**
-  - Live default (`data_source = "live"` in `_targets.R`); 100 %
-    fixture-coverage via `merge_with_fallback()`.
+  - Live default (`data_source = "live"` in `_targets.R`); every fixture var
+    is populated via `merge_with_fallback()`, but through a mix of source
+    classes — see the provenance manifest (`database_provenance(db)`:
+    `live` / `fixture_fallback` / `vendored_wf1` / `proxy` / `dummy` /
+    `derived`), not a single "100%" number.
+  - `to_martin_database()` attaches `attr(db, "provenance")`;
+    `classify_provenance()` maps variable names to source classes.
   - 41 dummy series via `apply_dummies()`.
   - IBCR identity chain (IBCTR/IBNDR/IBNDRA/RBR/IBCR) + IAD weights
     vendored from io_calcs output.
@@ -331,19 +358,37 @@ For canonical history use `git log`. Major landed workstreams:
 
 - **MARTIN solve / re-estimation:**
   - `solve_martin()` with frozen + reestimated coefficient paths
-    (TSRANGE rewriter for arbitrary `estimation_end`).
-  - 2025Q2 re-estimation closes the post-COVID gap on NCR/PTM/Y.
+    (TSRANGE rewriter for arbitrary `estimation_end`). Default is **frozen**
+    (`estimation_end = NULL`): keep the file's 2019Q3 sample so the re-fit
+    reproduces published coefficients. `"reestimated"` is an explicit opt-in.
+  - `coefficients = "reestimated"` + `estimation_end = "2025Q2"` re-fits
+    across the COVID break (closes the post-COVID gap on NCR/PTM/Y) — opt-in
+    only, because it re-estimates over a non-published sample.
+  - `solve_martin()` attaches `attr(out, "convergence")` (a NaN/Inf-in-TSRANGE
+    guard); `solve_martin_stochastic()` adds opt-in Monte-Carlo bands.
   - `martin::sensitivity_matrix()` pre-solves a per-unit-type
     calibration shock per equation and feeds the result to the LLM
-    propose prompt.
-  - Regression test bit-identical to the canonical bimets pipeline.
+    propose prompt; with `probe_curvature = TRUE` (default) it also solves at
+    3x to emit `deviation_3x` / `curvature_ratio` / `linearity_ok` (+ a
+    `converged` flag) so deviations aren't scaled linearly through MARTIN's
+    non-linearity.
+  - Regression test bit-identical to the canonical bimets pipeline (frozen,
+    no-adjustment path).
 
 - **Nowcast handover:**
   - ARIMA/ETS default + monthly bridge equations
-    (`method = "bridge_monthly"`).
+    (`method = "bridge_monthly"`), all working on **growth rates**, not a
+    levels-on-levels regression.
   - Pipeline default is now `bridge_monthly` with the indicator map
     `RC ← RT`, `Y ← HOURS`, `LE ← LE`; ARIMA fallback for unmapped
     targets and fixture-mode runs.
+  - `splice_handover(..., overwrite = FALSE)` default fills only NA / newly
+    extended forecast cells, protecting observed history.
+  - Committed chop-and-recover backtest
+    (`packages/nowcast/inst/eval/handover_backtest.R` → `.md`): bridge MAPE
+    9.8% (best of bridge/arima/naive), 82% within 5%, 89% within 10% on the
+    pre-COVID fixture. Single frozen, in-sample-vintage, short-horizon
+    smoke-test, not a forecast benchmark.
 
 - **Data layer:**
   - `fetch_oecd()` single-series SDMX fetcher (CPI confirmed working;
@@ -362,6 +407,14 @@ For canonical history use `git log`. Major landed workstreams:
     pipeline. Read this before touching anything in `judgement/`.
   - [docs/dashboard.md](docs/dashboard.md) — runtime guide for the
     Shiny dashboard (`just dashboard`).
+  - Docs truth-up pass: corrected the false "frozen / RESTRICT c1=1 / frozen
+    EViews coefficients" description (95 behaviorals, ~51 c1=1, `ESTIMATE`
+    re-fits every load, "frozen" = embedded 2019Q3 sample); recorded the
+    frozen-by-default coefficient path, the restored human-approval gate, the
+    `carry` tail default, the real nowcast backtest number (bridge MAPE 9.8%),
+    the provenance-manifest coverage framing, `renv.lock` committed, and the
+    new guardrails / linearity probe / `solve_martin_stochastic` /
+    `mechanical_audit` / exogenize-round-trip capabilities.
 
 - **Interactive UI:**
   - [`app/app.R`](app/app.R) is a Shiny dashboard for typing a

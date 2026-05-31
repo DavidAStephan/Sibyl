@@ -61,12 +61,13 @@ test_that("parse_proposal_to_adjustment() round-trips a valid proposal", {
     equation        = "PTM",
     horizon_start   = "2026Q1",
     horizon_end     = "2026Q3",
-    values          = c(0.10, 0.08, 0.05),
+    # PTM is units=log_diff; values within the 0.02 ceiling.
+    values          = c(0.001, 0.0008, 0.0005),
     rationale       = "Sustained services-price pressure from migration",
     channel         = "PTM -> P -> PC",
     expected_effect = "+0.15pp headline CPI by 2026Q4",
     confidence      = "medium",
-    tail            = "decay_50"
+    tail            = "carry"
   )
   a <- judgement:::parse_proposal_to_adjustment(
     p, round_id = "test", owner = "llm"
@@ -74,36 +75,66 @@ test_that("parse_proposal_to_adjustment() round-trips a valid proposal", {
   expect_s3_class(a, "adjustment")
   expect_equal(a$equation, "PTM")
   expect_equal(a$horizon, c("2026Q1", "2026Q2", "2026Q3"))
-  expect_equal(a$value, c(0.10, 0.08, 0.05))
+  expect_equal(a$value, c(0.001, 0.0008, 0.0005))
   expect_equal(a$source, "llm")
+  # A well-formed proposal is NOT coerced.
+  expect_false(a$coerced)
 })
 
-test_that("parse_proposal_to_adjustment() warns on length mismatch and pads", {
+test_that("parse_proposal_to_adjustment() carries optional target fields", {
+  skip_if_not_installed("martin")
+  p <- list(
+    equation = "PTM", horizon_start = "2026Q1", horizon_end = "2026Q1",
+    values = c(0.001), rationale = "sticky", confidence = "medium",
+    tail = "carry", target_variable = "P", expected_direction = "up"
+  )
+  a <- judgement:::parse_proposal_to_adjustment(p)
+  expect_equal(a$target_variable, "P")
+  expect_equal(a$expected_direction, "up")
+})
+
+test_that("parse_proposal_to_adjustment() treats empty optional fields as NA", {
+  skip_if_not_installed("martin")
+  p <- list(
+    equation = "PTM", horizon_start = "2026Q1", horizon_end = "2026Q1",
+    values = c(0.001), rationale = "sticky", confidence = "medium",
+    tail = "carry", target_variable = "", expected_direction = NA
+  )
+  a <- judgement:::parse_proposal_to_adjustment(p)
+  expect_true(is.na(a$target_variable))
+  expect_true(is.na(a$expected_direction))
+})
+
+test_that("parse_proposal_to_adjustment() warns, pads, and flags coerced", {
+  skip_if_not_installed("martin")
   p <- list(
     equation = "PTM",
     horizon_start = "2026Q1", horizon_end = "2026Q3",
-    values = c(0.10, 0.05),  # length 2, horizon length 3
+    values = c(0.001, 0.0005),  # length 2, horizon length 3
     rationale = "test", confidence = "medium", tail = "zero"
   )
   expect_warning(
     a <- judgement:::parse_proposal_to_adjustment(p),
     "2 values for 3-quarter horizon"
   )
-  expect_equal(a$value, c(0.10, 0.05, 0.05))  # padded with last
+  expect_equal(a$value, c(0.001, 0.0005, 0.0005))  # padded with last
+  expect_true(a$coerced)  # silent miscount now surfaced
 })
 
-test_that("parse_proposal_to_adjustment() warns on length mismatch and truncates", {
+test_that("parse_proposal_to_adjustment() warns, truncates, and flags coerced", {
+  skip_if_not_installed("martin")
   p <- list(
     equation = "PTM",
     horizon_start = "2026Q1", horizon_end = "2026Q3",
-    values = c(0.10, 0.05, 0.03, 0.02),  # length 4, horizon length 3
+    values = c(0.001, 0.0005, 0.0003, 0.0002),  # length 4, horizon length 3
     rationale = "test", confidence = "medium", tail = "zero"
   )
   expect_warning(
     a <- judgement:::parse_proposal_to_adjustment(p),
     "4 values for 3-quarter horizon"
   )
-  expect_equal(a$value, c(0.10, 0.05, 0.03))  # truncated
+  expect_equal(a$value, c(0.001, 0.0005, 0.0003))  # truncated
+  expect_true(a$coerced)
 })
 
 test_that("parse_proposal_to_adjustment() errors on missing fields", {
@@ -193,6 +224,40 @@ test_that("format_sensitivity_text() handles empty + malformed inputs", {
     format_sensitivity_text(tibble::tibble(equation = "PTM", target = "P")),
     "missing fields"
   )
+})
+
+test_that("format_sensitivity_text() ignores linearity columns when absent", {
+  # The legacy matrix shape (no linearity_ok / converged) must still render
+  # without caveats and without error.
+  txt <- format_sensitivity_text(sensitivity_fixture())
+  expect_false(grepl("NONLINEAR", txt))
+  expect_false(grepl("NON-CONVERGED", txt))
+})
+
+test_that("format_sensitivity_text() surfaces a NONLINEAR caveat when flagged", {
+  fixture <- sensitivity_fixture()
+  # martin's new columns: flag the PTM -> P propagation as nonlinear.
+  fixture$deviation_3x    <- fixture$deviation * 3
+  fixture$curvature_ratio <- 1.0
+  fixture$linearity_ok    <- TRUE
+  fixture$converged       <- TRUE
+  is_ptm_p <- fixture$equation == "PTM" & fixture$target == "P"
+  fixture$linearity_ok[is_ptm_p]    <- FALSE
+  fixture$curvature_ratio[is_ptm_p] <- 2.40
+  txt <- format_sensitivity_text(fixture)
+  expect_match(txt, "NONLINEAR")
+  expect_match(txt, "curvature~2.40")
+  # The header now reflects the corrected default tail (carry, not decay_50).
+  expect_match(txt, "carry")
+})
+
+test_that("format_sensitivity_text() surfaces a NON-CONVERGED caveat", {
+  fixture <- sensitivity_fixture()
+  fixture$converged <- TRUE
+  is_lur_y <- fixture$equation == "LUR" & fixture$target == "Y"
+  fixture$converged[is_lur_y] <- FALSE
+  txt <- format_sensitivity_text(fixture)
+  expect_match(txt, "NON-CONVERGED")
 })
 
 test_that("system_prompt_propose() includes sensitivity block when text given", {

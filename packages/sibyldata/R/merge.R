@@ -33,23 +33,61 @@
 #' (LUR, NCR) the splice is seamless. Variables present only in
 #' `primary` are added; variables present only in `fallback` are kept.
 #'
+#' Provenance is refined here, not guessed: when `primary` carries a
+#' `"provenance"` attribute (as produced by [to_martin_database()]), the
+#' merged database carries a refined one. A variable keeps its live class only
+#' if the live path actually supplied a value; a variable that exists only in
+#' `fallback`, or whose live series contributed no non-NA value to the union,
+#' is recorded as `"fixture_fallback"`. When `primary` carries no provenance
+#' attribute (e.g. a hand-built list in tests), the output is a plain list with
+#' no provenance attached -- behaviour is otherwise unchanged.
+#'
 #' @param primary A named list of bimets TIMESERIES (typically a live
-#'   sibyldata-produced database).
+#'   sibyldata-produced database, carrying a `"provenance"` attribute).
 #' @param fallback A named list of bimets TIMESERIES (typically
 #'   `martin::read_fixture()`).
 #' @return A named list of bimets TIMESERIES with the spliced union
-#'   per variable.
+#'   per variable. When `primary` carries provenance, the result carries a
+#'   refined `"provenance"` attribute (see [database_provenance()]).
 #' @export
 merge_with_fallback <- function(primary, fallback) {
   out <- fallback
+  # Track, per variable, whether the live (primary) path actually supplied a
+  # value. live_supplied[[v]] is TRUE when primary has the variable with at
+  # least one non-NA observation; such variables keep their live class, all
+  # others are recorded as fixture_fallback below.
+  live_supplied <- character(0)
   for (v in names(primary)) {
+    if (any(!is.na(as.numeric(primary[[v]])))) {
+      live_supplied <- c(live_supplied, v)
+    }
     if (is.null(out[[v]])) {
       out[[v]] <- primary[[v]]
       next
     }
     out[[v]] <- coalesce_ts(primary[[v]], out[[v]])
   }
+
+  # Only refine provenance when the caller handed us a classified primary;
+  # this keeps the bare-list test path (and its expect_identical) untouched.
+  prov <- attr(primary, "provenance")
+  if (!is.null(prov)) {
+    attr(out, "provenance") <- refine_provenance(prov, names(out),
+                                                 live_supplied)
+  }
   out
+}
+
+# Build the merged-database provenance from the primary's classification.
+# Every variable in `vars` (the merged database's names) gets a class:
+#   - a primary variable that supplied a non-NA value keeps its primary class;
+#   - any other variable (fixture-only, or primary present but all-NA over the
+#     union) is recorded as "fixture_fallback".
+refine_provenance <- function(primary_prov, vars, live_supplied) {
+  class_for <- primary_prov$source_class[match(vars, primary_prov$variable)]
+  is_live <- vars %in% live_supplied & !is.na(class_for)
+  class_for[!is_live] <- "fixture_fallback"
+  tibble::tibble(variable = vars, source_class = class_for)
 }
 
 # Splice `primary` into `fallback`: union the time spans, use primary

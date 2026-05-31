@@ -3,11 +3,15 @@
 #' The bimets `.txt` model definitions are vendored into `inst/extdata/` from
 #' `references/bimets-main/`. This helper returns the absolute path on disk.
 #'
-#' @param variant One of `"af"` (default — `MARTINMOD_AF.txt`, behavioural form
-#'   with `RESTRICT> c1=1` so each equation is mathematically an identity with
-#'   frozen EViews coefficients but a `ConstantAdjustment` residual slot),
+#' @param variant One of `"af"` (default — `MARTINMOD_AF.txt`, the behavioural
+#'   form with a `ConstantAdjustment` add-factor slot on every equation),
 #'   `"identity"` (`MARTINMOD.txt`, pure-identity equivalent), or `"est"`
-#'   (`MARTINMOD_EST.txt`, the true behavioural form for re-estimation).
+#'   (`MARTINMOD_EST.txt`, the form intended for re-estimation). Note that
+#'   `"af"` is genuinely behavioural: of its 95 `BEHAVIORAL>` equations only
+#'   ~51 carry a `RESTRICT> c1=1`; the rest impose real cross-coefficient
+#'   restrictions (e.g. `c4+c5+c6+c7=1`, `c4=0.5`). `bimets::ESTIMATE()`
+#'   re-fits the free coefficients on every load — it does not replay
+#'   published EViews values as-is.
 #' @return Absolute path to the `.txt` file.
 #' @export
 model_file_path <- function(variant = c("af", "identity", "est")) {
@@ -55,10 +59,14 @@ martin_data_fixture <- function() {
 #' MARTIN <- bimets::ESTIMATE(MARTIN)
 #' ```
 #'
-#' For the default `variant = "af"`, ESTIMATE simply confirms the imposed
-#' coefficients (every equation is `BEHAVIORAL>` with `RESTRICT> c1=1`) and
-#' computes residuals — those residuals are what the add-factor pipeline
-#' consumes downstream.
+#' For the default `variant = "af"`, ESTIMATE actually re-fits the free
+#' coefficients of all 95 behavioural equations on every load — it does NOT
+#' merely confirm imposed values. Only ~51 of those equations carry a
+#' `RESTRICT> c1=1`; the rest impose genuine cross-coefficient restrictions
+#' (e.g. `c4+c5+c6+c7=1`). ESTIMATE also computes each equation's residuals,
+#' and those residuals are what the add-factor pipeline consumes downstream.
+#' "Frozen" coefficients (the default) means estimating over the model file's
+#' embedded 2019Q3 `TSRANGE` sample, not loading published EViews values.
 #'
 #' @param database A named list of `bimets::TIMESERIES` keyed by MARTIN
 #'   variable name. Eventually produced by

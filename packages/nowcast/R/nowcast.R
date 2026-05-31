@@ -131,22 +131,55 @@ forecast_one <- function(ts, variable, h, method, level) {
   hi <- fabletools::hilo(fc, level)
   hi_vec <- hi[[hi_col]]   # a fabletools hilo vector
 
+  central <- hi$.mean
+  lower   <- hi_vec$lower
+  upper   <- hi_vec$upper
+
+  # Finite guard. fable can silently return NA / NaN / Inf central forecasts
+  # when the chosen model degenerates (e.g. an ARIMA that failed to fit a
+  # near-constant series). A non-finite central value spliced into MARTIN
+  # poisons the whole solve, so we refuse to hand one back.
+  if (!all(is.finite(central))) {
+    stop("Nowcast for `", variable, "` (method '", method, "') produced a ",
+         "non-finite central forecast. Refusing to return an NA/Inf value ",
+         "that would poison the MARTIN solve.", call. = FALSE)
+  }
+  # The interval should bracket the central path; if fable hands back a
+  # non-finite or inverted band the central value is still usable but the
+  # band is not trustworthy, so flag it loudly.
+  if (!all(is.finite(lower) & is.finite(upper) &
+           lower <= central & central <= upper)) {
+    stop("Nowcast for `", variable, "` (method '", method, "') produced an ",
+         "invalid forecast interval (non-finite or not bracketing the ",
+         "central path).", call. = FALSE)
+  }
+
   tibble::tibble(
     variable = variable,
     quarter  = hi$quarter,
-    central  = hi$.mean,
-    lower    = hi_vec$lower,
-    upper    = hi_vec$upper,
+    central  = central,
+    lower    = lower,
+    upper    = upper,
     method   = method
   )
 }
 
-# Monthly-indicator bridge forecast. Aggregates the indicator's full
-# historical months to quarterly means, fits OLS target ~ indicator on
-# overlapping quarters, then predicts the next `h` target quarters using
-# whatever months of the indicator are available (1, 2, or 3 months per
-# quarter — partial quarters get the partial mean as their indicator
-# value). Falls back to a naive last-value forecast if the OLS fit is
+# Monthly-indicator bridge forecast, specified in GROWTH RATES.
+#
+# Both the target and the (quarterly-aggregated) indicator are I(1)
+# trending series, so a levels-on-levels regression target ~ indicator is
+# a spurious regression: it fits the shared trend, not the bridge signal,
+# and its standard errors are meaningless. Instead we regress the quarterly
+# log-difference of the target on the log-difference of the indicator:
+#
+#     dlog(target_t) = b0 + b1 * dlog(indicator_t) + e_t
+#
+# then reconstruct the forecast level by applying the predicted growth to
+# the last observed target level (chained over the horizon). The interval
+# is a proper prediction interval from stats::predict(interval =
+# "prediction") on the growth regression, mapped back to levels, and is
+# widened for partial-quarter Q+1 points whose indicator only covers 1-2
+# of the 3 months. Falls back to a naive last-value forecast if the fit is
 # degenerate or no indicator data covers the forecast horizon.
 forecast_one_bridge_monthly <- function(target_ts, variable,
                                         indicator_ts, indicator_name,
@@ -198,29 +231,45 @@ forecast_one_bridge_monthly <- function(target_ts, variable,
   ind_aligned[has_ind]        <- ind_means[match_pos[has_ind]]
   ind_nmonth_aligned[has_ind] <- as.integer(ind_nmonth[match_pos[has_ind]])
 
-  full_sample <- !is.na(tgt_v) & !is.na(ind_aligned) & ind_nmonth_aligned == 3L
+  # ---- Build growth-rate (log-difference) series for the bridge ----------
+  # Use log-differences where the level is strictly positive (the usual case
+  # for the macro indicators bridged here); fall back to simple differences
+  # for series that can be non-positive (e.g. net balances), so the bridge
+  # is still defined. dlog ~= quarterly growth rate; the reconstruction step
+  # below is the exact inverse for whichever transform we pick.
+  use_log <- all(tgt_v[!is.na(tgt_v)] > 0) &&
+             all(ind_aligned[!is.na(ind_aligned)] > 0)
+  grow <- function(v) {
+    if (use_log) c(NA_real_, diff(log(v))) else c(NA_real_, diff(v))
+  }
+  d_tgt <- grow(tgt_v)
+  d_ind <- grow(ind_aligned)
+
+  # Fit only on full-month quarters (3 obs) with both growth terms defined.
+  full_sample <- is.finite(d_tgt) & is.finite(d_ind) &
+                 ind_nmonth_aligned == 3L
   if (sum(full_sample) < 8L) {
-    # Not enough overlap to fit a bridge regression — degrade gracefully.
+    # Not enough overlap to fit a growth-rate bridge — degrade gracefully.
     return(forecast_one(target_ts, variable, h, "arima", level))
   }
 
   df_fit <- data.frame(
-    y = tgt_v[full_sample],
-    x = ind_aligned[full_sample]
+    dy = d_tgt[full_sample],
+    dx = d_ind[full_sample]
   )
-  fit <- tryCatch(stats::lm(y ~ x, data = df_fit),
+  fit <- tryCatch(stats::lm(dy ~ dx, data = df_fit),
                   error = function(e) NULL)
-  if (is.null(fit)) {
+  # A zero-variance indicator-growth column (collinear with the intercept)
+  # gives a rank-deficient fit whose prediction interval is unusable.
+  if (is.null(fit) || anyNA(stats::coef(fit))) {
     return(forecast_one(target_ts, variable, h, "arima", level))
   }
-  sigma <- summary(fit)$sigma
-  z_crit <- stats::qnorm(0.5 + level / 200)  # two-sided level%
 
-  # ---- Forecast the next `h` quarters using indicator's recent months
-  last_tgt_key <- max(tgt_key[!is.na(tgt_v)])
-  fc_keys <- last_tgt_key + cumsum(rep(c(1L, 7L), length.out = h)) -
-             rep(c(0L, 6L), length.out = h)
-  # simpler: build by hand
+  # ---- Forecast the next `h` quarters, chaining growth onto the last level
+  last_obs_pos <- max(which(!is.na(tgt_v)))
+  last_tgt_key <- tgt_key[last_obs_pos]
+  last_level   <- tgt_v[last_obs_pos]   # strictly positive when use_log
+
   fc_keys <- integer(h)
   ly <- last_tgt_key %/% 10L
   lq <- last_tgt_key %% 10L
@@ -230,52 +279,127 @@ forecast_one_bridge_monthly <- function(target_ts, variable,
     fc_keys[i] <- ly * 10L + lq
   }
 
+  # Indicator growth feeding each forecast quarter. We need the indicator's
+  # quarter level relative to the previous quarter's full level; partial
+  # quarters (1-2 months observed) get a partial mean and are flagged so we
+  # can widen the interval to reflect the carry-forward uncertainty.
+  level_central <- last_level
   rows <- vector("list", h)
   for (i in seq_len(h)) {
-    k <- fc_keys[i]
+    k   <- fc_keys[i]
     pos <- match(k, ind_q_keys)
+    partial <- FALSE
     if (is.na(pos)) {
-      # No indicator coverage for this quarter — use last available
-      # indicator-quarter value (carry-forward).
+      # No indicator coverage at all for this quarter — carry the last
+      # available indicator quarter forward and treat it as fully partial.
       pos <- length(ind_q_keys)
+      partial <- TRUE
+    } else if (!isTRUE(ind_nmonth[pos] >= 3L)) {
+      partial <- TRUE   # 1-2 months observed: partial-quarter indicator
     }
-    x_val <- ind_means[pos]
-    central <- stats::predict(fit, newdata = data.frame(x = x_val))
-    se <- sigma  # rough constant interval; ignores OLS leverage
+
+    # Previous quarter's indicator level for the growth denominator: the
+    # quarter immediately before k, else the last full indicator quarter.
+    prev_key <- {
+      pk_q <- (k %% 10L) - 1L; pk_y <- k %/% 10L
+      if (pk_q < 1L) { pk_q <- 4L; pk_y <- pk_y - 1L }
+      pk_y * 10L + pk_q
+    }
+    prev_pos <- match(prev_key, ind_q_keys)
+    if (is.na(prev_pos)) prev_pos <- max(pos - 1L, 1L)
+
+    ind_now  <- ind_means[pos]
+    ind_prev <- ind_means[prev_pos]
+    dx_val <- if (use_log) log(ind_now) - log(ind_prev)
+              else ind_now - ind_prev
+    if (!is.finite(dx_val)) dx_val <- 0  # flat fallback
+
+    pred <- stats::predict(
+      fit, newdata = data.frame(dx = dx_val),
+      interval = "prediction", level = level / 100
+    )
+    dy_hat <- pred[1, "fit"]
+    dy_lo  <- pred[1, "lwr"]
+    dy_hi  <- pred[1, "upr"]
+
+    # Widen the growth interval for partial-quarter points: the indicator
+    # we fed in is a carry-forward / partial mean, so the realised quarter
+    # could still move. Inflate the half-width by 50% around the central
+    # growth before mapping back to levels.
+    if (partial) {
+      half_lo <- (dy_hat - dy_lo) * 1.5
+      half_hi <- (dy_hi - dy_hat) * 1.5
+      dy_lo <- dy_hat - half_lo
+      dy_hi <- dy_hat + half_hi
+    }
+
+    # Reconstruct levels by applying growth to the running central level.
+    if (use_log) {
+      level_central <- level_central * exp(dy_hat)
+      level_lower   <- level_central * exp(dy_lo - dy_hat)
+      level_upper   <- level_central * exp(dy_hi - dy_hat)
+    } else {
+      level_central <- level_central + dy_hat
+      level_lower   <- level_central + (dy_lo - dy_hat)
+      level_upper   <- level_central + (dy_hi - dy_hat)
+    }
+
     yr <- k %/% 10L; qn <- k %% 10L
-    # Match forecast_one()'s `quarter` column type — tsibble yearquarter.
     rows[[i]] <- tibble::tibble(
       variable = variable,
+      # Match forecast_one()'s `quarter` column type — tsibble yearquarter.
       quarter  = tsibble::yearquarter(sprintf("%d Q%d", yr, qn)),
-      central  = unname(central),
-      lower    = unname(central - z_crit * se),
-      upper    = unname(central + z_crit * se),
+      central  = unname(level_central),
+      lower    = unname(level_lower),
+      upper    = unname(level_upper),
       method   = sprintf("bridge_monthly[%s]", indicator_name)
     )
   }
-  dplyr::bind_rows(rows)
+  out <- dplyr::bind_rows(rows)
+
+  # Finite guard — same contract as forecast_one(): never hand a non-finite
+  # central value (or inverted band) back to the splice / MARTIN solve.
+  if (!all(is.finite(out$central))) {
+    stop("bridge_monthly for `", variable, "` produced a non-finite ",
+         "central forecast.", call. = FALSE)
+  }
+  if (!all(is.finite(out$lower) & is.finite(out$upper) &
+           out$lower <= out$central & out$central <= out$upper)) {
+    stop("bridge_monthly for `", variable, "` produced an invalid forecast ",
+         "interval (non-finite or not bracketing the central path).",
+         call. = FALSE)
+  }
+  out
 }
 
 #' Splice nowcast forecasts back into a MARTIN-shape database
 #'
-#' Overwrites the matching `[year, quarter]` cells of each handover variable
-#' with the `central` forecast value. Uses bimets per-cell assignment, the
+#' Writes the `central` forecast value into the matching `[year, quarter]`
+#' cells of each handover variable. Uses bimets per-cell assignment, the
 #' same pattern `martin::solve_martin()` uses to inject add-factors.
 #'
-#' If a cell already has a (non-NA) value, it's still overwritten — the
-#' assumption is that nowcast was called *because* those cells lagged in
-#' real time and the forecasts are more current than whatever was there.
+#' By default a forecast does **not** clobber an already-observed (non-NA)
+#' cell — only NA cells and genuinely new (extended) forecast quarters are
+#' filled. This protects historical data from being silently overwritten by
+#' a model estimate. Pass `overwrite = TRUE` to force the old behaviour
+#' (overwrite even observed cells), e.g. when nowcast was deliberately run
+#' to *replace* cells known to be stale provisional prints.
 #'
 #' If a forecast quarter is past the end of the existing bimets ts, the ts
-#' is extended via `bimets::TSEXTEND`. If the assignment would create a gap
-#' (a quarter between the last observation and the forecast), that's an
-#' error — the caller probably has a sequencing bug.
+#' is extended via `bimets::TSEXTEND`. The first forecast quarter must be
+#' contiguous with the series' last observation: if there is a gap (a
+#' missing quarter between the last observation and the first forecast),
+#' that's an error — the caller has a sequencing bug, and silently carrying
+#' a value across the gap would corrupt the database.
 #'
 #' @param database A named list of `bimets::TIMESERIES`.
 #' @param handover A tibble from [nowcast_handover()].
+#' @param overwrite Logical. If `FALSE` (default), already-observed non-NA
+#'   cells are left untouched and only NA / new forecast cells are filled.
+#'   If `TRUE`, observed cells are overwritten too.
 #' @return The updated database.
 #' @export
-splice_handover <- function(database, handover) {
+splice_handover <- function(database, handover, overwrite = FALSE) {
   required <- c("variable", "quarter", "central")
   missing <- setdiff(required, names(handover))
   if (length(missing)) {
@@ -290,36 +414,79 @@ splice_handover <- function(database, handover) {
     }
     sub <- handover[handover$variable == var, , drop = FALSE]
     sub <- sub[order(sub$quarter), , drop = FALSE]
-    database[[var]] <- splice_one(database[[var]], sub, variable = var)
+    database[[var]] <- splice_one(database[[var]], sub, variable = var,
+                                  overwrite = overwrite)
   }
   database
 }
 
 # Splice one variable's forecasts into one bimets ts. Extends the ts if the
-# forecast quarters run past the current end.
-splice_one <- function(ts, sub, variable) {
+# forecast quarters run past the current end. Refuses to (a) write a
+# non-finite central value, (b) carry a value across a gap between the last
+# observation and the first forecast quarter, or (c) clobber an observed
+# non-NA cell unless `overwrite = TRUE`.
+splice_one <- function(ts, sub, variable, overwrite = FALSE) {
   out <- ts
+  vals    <- as.numeric(out)
+  obs_idx <- which(!is.na(vals))
+  if (length(obs_idx) == 0L) {
+    stop("Series `", variable, "` is entirely NA; nothing to splice onto.",
+         call. = FALSE)
+  }
+
+  # Decimal-time index of the last observation, and the contiguous gap
+  # check for the first forecast quarter.
+  t_idx       <- as.numeric(stats::time(out))
+  last_obs_dec <- t_idx[max(obs_idx)]
+  first_q      <- sub$quarter[1]
+  first_year   <- as.integer(format(first_q, "%Y"))
+  first_qnum   <- as.integer(substr(format(first_q), 7, 7))
+  first_dec    <- first_year + (first_qnum - 1) / 4
+  # The first forecast quarter must be the last observation itself
+  # (re-nowcasting a provisional print) or the very next quarter. A larger
+  # jump means a missing quarter in between — a sequencing bug.
+  if (first_dec > last_obs_dec + 0.25 + 1e-9) {
+    stop("Splice for `", variable, "` would carry a value across a gap: ",
+         "the first forecast quarter (", format(first_q), ") is not ",
+         "contiguous with the series' last observation. The caller ",
+         "probably has a sequencing bug.", call. = FALSE)
+  }
+
   for (i in seq_len(nrow(sub))) {
     q       <- sub$quarter[i]
     year    <- as.integer(format(q, "%Y"))
     qnum    <- as.integer(substr(format(q), 7, 7))
+    val     <- sub$central[i]
 
-    # Extend if needed
-    tsp_now <- stats::tsp(out)
-    end_dec <- tsp_now[2]
+    # Never write a non-finite central value into the database.
+    if (!is.finite(val)) {
+      stop("Refusing to splice a non-finite forecast for `", variable,
+           "` at ", format(q), ".", call. = FALSE)
+    }
+
+    tsp_now    <- stats::tsp(out)
+    end_dec    <- tsp_now[2]
     target_dec <- year + (qnum - 1) / 4
+
     if (target_dec > end_dec + 1e-9) {
-      # bimets::TSEXTEND with a constant 0 fill (replaced below by the
-      # assignment); we just need the storage allocated to `target_dec`.
+      # Genuinely new quarter past the series end: extend storage and write
+      # the value in one step. (No observed value can exist here.)
       out <- bimets::TSEXTEND(
         out,
         UPTO    = c(year, qnum),
         EXTMODE = "MYCONST",
-        FACTOR  = sub$central[i]
+        FACTOR  = val
       )
       next  # TSEXTEND with MYCONST = central already wrote the value
     }
-    out[[year, qnum]] <- sub$central[i]
+
+    # In-range cell: respect the overwrite guard. Skip if a non-NA value is
+    # already present and we are not in overwrite mode.
+    if (!overwrite) {
+      existing <- out[[year, qnum]]
+      if (!is.na(existing)) next
+    }
+    out[[year, qnum]] <- val
   }
   out
 }

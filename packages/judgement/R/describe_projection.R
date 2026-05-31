@@ -190,7 +190,8 @@ diagnose_audit <- function(audit, projection, baseline) {
 
   # Variables we know how to look up (matches the headline glossary).
   known_vars <- c("LUR", "TLUR", "NCR", "PTM", "P", "Y", "RC", "GNE",
-                  "LE", "LF", "RBR", "LPR", "NMR", "PI_E", "RSTAR")
+                  "LE", "LF", "RBR", "LPR", "NMR", "PI_E", "RSTAR",
+                  "PW", "PAE")
 
   rows <- lapply(seq_len(nrow(audit)), function(i) {
     claim <- audit$claim[i]
@@ -242,10 +243,20 @@ diagnose_audit <- function(audit, projection, baseline) {
           variable, diff
         )
       } else {
-        # asserts_no_change & diff ~ 0: audit shouldn't disagree.
+        # asserts_no_change & |diff| ~ 0, yet the audit marked this claim
+        # `disagree`. The variable genuinely did NOT move, so this is most
+        # likely an audit artifact: the LLM auditor flagged a disagreement
+        # the numbers don't support (e.g. it keyed off framing rather than
+        # the realised diff). Surfaced as `narrative_conflict` so a human
+        # can reconcile the verbal verdict against the (null) numeric move.
         category <- "narrative_conflict"
-        explanation <- paste("Claim's direction is unclear from the",
-                             "audit verdict alone; review manually.")
+        explanation <- sprintf(
+          paste("Narrative asserted no change to %s and the projection",
+                "agrees (diff %+.3f ~ 0), yet the audit marked this",
+                "disagree. Likely an audit artifact -- the LLM verdict is",
+                "not supported by the realised diff. Reconcile manually."),
+          variable, diff
+        )
       }
     }
 
@@ -265,7 +276,13 @@ diagnose_audit <- function(audit, projection, baseline) {
 
 # Pick the first known MARTIN variable that appears as a whole word in the
 # claim, preferring longer matches (TLUR before LUR) so we don't grab the
-# wrong one.
+# wrong one. Falls back to a plain-English keyword map.
+#
+# CRITICAL ordering: the keyword map is scanned in order and returns on the
+# first hit, so the SPECIFIC inflation phrasings (trimmed-mean / underlying /
+# core -> PTM) MUST precede the generic "inflation" -> P. Otherwise a claim
+# about "trimmed-mean inflation" would be misrouted to headline P and the
+# diff lookup would compare the wrong variable.
 detect_variable_in_claim <- function(claim, known_vars) {
   if (!is.character(claim) || length(claim) != 1L) return(NA_character_)
   # Order by descending name length so TLUR matches before LUR, etc.
@@ -274,21 +291,34 @@ detect_variable_in_claim <- function(claim, known_vars) {
     pat <- sprintf("(?<![A-Z_])%s(?![A-Z_])", v)
     if (grepl(pat, claim, perl = TRUE)) return(v)
   }
-  # Also try plain-English keywords -> variable mapping.
+  # Plain-English keyword -> variable mapping. ORDER MATTERS: most specific
+  # phrasings first. Trimmed-mean / underlying / core inflation -> PTM must
+  # come before the generic "inflation" -> P.
   keyword_map <- c(
-    "unemployment rate"     = "LUR",
-    "cash rate"             = "NCR",
-    "cash-rate"             = "NCR",
-    "policy rate"           = "NCR",
-    "inflation"             = "P",
-    "headline inflation"    = "P",
-    "trimmed-mean"          = "PTM",
-    "consumer prices"       = "P",
-    "real output"           = "Y",
-    "real gdp"              = "Y",
-    "gdp"                   = "Y",
-    "employment"            = "LE",
-    "labour force"          = "LF"
+    "unemployment rate"       = "LUR",
+    "jobless rate"            = "LUR",
+    "cash rate"               = "NCR",
+    "cash-rate"               = "NCR",
+    "policy rate"             = "NCR",
+    "mortgage rate"           = "NMR",
+    "participation rate"      = "LPR",
+    "trimmed-mean"            = "PTM",
+    "trimmed mean"            = "PTM",
+    "underlying inflation"    = "PTM",
+    "core inflation"          = "PTM",
+    "services inflation"      = "PTM",
+    "headline inflation"      = "P",
+    "consumer prices"         = "P",
+    "consumer price"          = "P",
+    "inflation"               = "P",
+    "wage growth"             = "PW",
+    "wage price"              = "PW",
+    "wages"                   = "PW",
+    "real output"             = "Y",
+    "real gdp"                = "Y",
+    "gdp"                     = "Y",
+    "employment"              = "LE",
+    "labour force"            = "LF"
   )
   claim_lower <- tolower(claim)
   for (kw in names(keyword_map)) {
@@ -326,4 +356,92 @@ diff_at_horizon_end <- function(projection, baseline) {
                 drop = FALSE]
   joined <- merge(p, b, by = "variable", suffixes = c("_p", "_b"))
   setNames(joined$value_p - joined$value_b, joined$variable)
+}
+
+#' Deterministic, LLM-independent fidelity check on an adjustment set
+#'
+#' For each adjustment that declares a `target_variable` and
+#' `expected_direction`, compares the *declared* expectation against the
+#' *realised* projection-minus-baseline diff (at horizon end) on that
+#' variable. Unlike [compare_narrative_to_description()] this involves no LLM
+#' call at all: it is a mechanical cross-check that the model actually moved
+#' the variable the adjustment claimed to move, in the claimed direction.
+#'
+#' A row's `agrees` is:
+#' * `TRUE`  if the realised diff's sign matches `expected_direction`
+#'   (`up` -> positive, `down` -> negative, `none` -> within tolerance);
+#' * `FALSE` if it contradicts the declared direction;
+#' * `NA`    if the adjustment declared no target/direction, or the variable
+#'   isn't present in the projection (nothing to check against).
+#'
+#' Adjustments with no declared `target_variable` are skipped (no row), since
+#' there is nothing deterministic to audit.
+#'
+#' @param adjustments An [adjustment_list()] (the *approved* set, ideally).
+#' @param projection  A projection tibble from `martin::solve_martin()`.
+#' @param baseline    The baseline projection tibble.
+#' @param tol Numeric tolerance below which a diff counts as "none"/no-move.
+#'   Default 1e-6.
+#' @return A tibble with columns `equation`, `target_variable`,
+#'   `expected_direction`, `realised_diff`, `agrees`.
+#' @seealso [diagnose_audit()] (the LLM-audit-driven classifier).
+#' @export
+mechanical_audit <- function(adjustments, projection, baseline, tol = 1e-6) {
+  if (!inherits(adjustments, "adjustment_list")) {
+    stop("`adjustments` must be an adjustment_list.", call. = FALSE)
+  }
+  stopifnot(is.data.frame(projection), is.data.frame(baseline))
+
+  empty <- tibble::tibble(
+    equation           = character(),
+    target_variable    = character(),
+    expected_direction = character(),
+    realised_diff      = double(),
+    agrees             = logical()
+  )
+  if (length(adjustments) == 0L) return(empty)
+
+  diff_lookup <- diff_at_horizon_end(projection, baseline)
+
+  rows <- lapply(adjustments, function(a) {
+    tgt <- a$target_variable
+    dir <- a$expected_direction
+    # Skip adjustments that declared nothing to audit.
+    if (is.null(tgt) || length(tgt) != 1L || is.na(tgt) || !nzchar(tgt)) {
+      return(NULL)
+    }
+    realised <- if (tgt %in% names(diff_lookup)) {
+      unname(diff_lookup[[tgt]])
+    } else {
+      NA_real_
+    }
+    agrees <- mechanical_direction_agrees(dir, realised, tol)
+    tibble::tibble(
+      equation           = a$equation,
+      target_variable    = tgt,
+      expected_direction = if (is.na(dir)) NA_character_ else as.character(dir),
+      realised_diff      = realised,
+      agrees             = agrees
+    )
+  })
+  rows <- rows[!vapply(rows, is.null, logical(1))]
+  if (length(rows) == 0L) return(empty)
+  dplyr::bind_rows(rows)
+}
+
+# Compare a declared direction against a realised diff. Returns NA when there
+# is nothing to compare (no direction declared, or the variable wasn't in the
+# projection); otherwise a logical agreement.
+mechanical_direction_agrees <- function(direction, realised, tol = 1e-6) {
+  if (is.null(direction) || length(direction) != 1L || is.na(direction)) {
+    return(NA)
+  }
+  if (is.na(realised)) return(NA)
+  switch(
+    as.character(direction),
+    up   = realised >  tol,
+    down = realised < -tol,
+    none = abs(realised) <= tol,
+    NA
+  )
 }

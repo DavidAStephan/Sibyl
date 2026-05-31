@@ -61,28 +61,52 @@ The variables MARTIN needs as a handover (real GDP, unemployment, inflation,
 the cash rate, exchange rates, commodity prices) are not fully observed for
 the current and next quarter. `nowcast` estimates them.
 
-Deliberately simple: we want defensible, not state-of-the-art. Likely just
-`fable` with a small set of bridge equations using monthly indicators (labour
-force survey, retail trade, building approvals, business indicators).
+Deliberately simple: we want defensible, not state-of-the-art. `fable` with a
+small set of bridge equations using monthly indicators (labour force survey,
+retail trade, building approvals, business indicators), with a univariate
+ARIMA fallback for variables without a mapped indicator. The bridge works on
+**growth rates**, not a levels-on-levels regression, and `splice_handover()`
+fills only NA / newly-extended forecast cells by default (`overwrite = FALSE`)
+so observed history is never clobbered.
 
 Returns a tidy tibble of `(variable, quarter, central, lower, upper)` that
 `martin::solve_martin()` consumes as starting values.
+
+A reproducible chop-and-recover backtest on the bundled MARTIN fixture
+(44 handover variables, 88 held-out points, H=2, pre-COVID history ending
+2019Q3) is committed at `packages/nowcast/inst/eval/handover_backtest.R`
+(regenerating `.../handover_backtest.md`): the bridge method posts a **MAPE
+of 9.8%** (best of bridge / arima / naive), with **82% of points within 5%**
+and 89% within 10%. This is a single frozen pre-COVID, in-sample-vintage,
+short-horizon fixture — a smoke-test-grade sanity check, not a forecast
+benchmark — but the numbers are now tied to runnable committed code.
 
 ### `martin` — the macro model
 
 Wraps the `bimets` implementation of MARTIN. The vendored model files live
 in [packages/martin/inst/extdata/](packages/martin/inst/extdata/):
 
-- `MARTINMOD_AF.txt` — default. Each equation is `BEHAVIORAL>` but with
-  `RESTRICT> c1=1`, so it's mathematically an identity with frozen EViews
-  coefficients. The `bimets` `ConstantAdjustment=` argument is the
-  add-factor channel.
-- `MARTINMOD.txt` — pure-identity equivalent (same coefficients, no
-  behavioural shell).
-- `MARTINMOD_EST.txt` — true behavioural form, for the day we re-estimate.
+- `MARTINMOD_AF.txt` — default. It declares **95 `BEHAVIORAL>` equations**.
+  Of these, only about **51** carry `RESTRICT> c1=1`; the rest impose *real*
+  cross-coefficient restrictions (`c4+c5+c6+c7=1`, `c4=0.5`, and so on) and
+  leave free coefficients to be estimated. So this is genuinely a behavioural
+  model, not a wall of identities. The `bimets` `ConstantAdjustment=`
+  argument is the add-factor channel.
+- `MARTINMOD.txt` — pure-identity equivalent (no behavioural shell).
+- `MARTINMOD_EST.txt` — true behavioural form, for the day we re-estimate
+  over our own chosen sample.
 
-The default for v0 is `MARTINMOD_AF.txt` with frozen coefficients. Re-estimation
-is gated behind a future flag.
+**What "frozen" means here, precisely.** `bimets::ESTIMATE` runs on *every*
+`load_martin()` and re-fits the free coefficients — there is no path that
+reads published EViews numbers and skips estimation. "Frozen" means we keep
+the model file's embedded **2019Q3 estimation `TSRANGE`** (the published
+sample), so the re-fit reproduces the published coefficients. The
+`coefficients = c("frozen", "reestimated")` argument selects between keeping
+that 2019Q3 window (`"frozen"`, the v0 default, `estimation_end = NULL`) and
+rewriting the `TSRANGE` to a later `estimation_end` (`"reestimated"`) — e.g.
+re-fitting across the post-COVID break. Re-estimating over a non-published
+sample is therefore an **explicit opt-in**, never the default, consistent
+with the project principle "do not re-estimate without asking".
 
 The public surface is small:
 
@@ -98,7 +122,23 @@ solve_martin(
 
 `projection_tbl` is a long tidy tibble of `(variable, quarter, value,
 scenario, projection_id)`, with attributes recording the database vintage,
-the adjustment list applied, and the bimets convergence diagnostics.
+the adjustment list applied, and the bimets convergence diagnostics. The
+convergence attribute is now explicit: `attr(out, "convergence") = list(
+converged = logical, n_nonfinite = integer)`, set FALSE when any endogenous
+series carries a NaN/Inf inside the solved `TSRANGE` (so a blown-up solve is
+never silently handed downstream). `solve_martin()`'s signature and default
+outputs are otherwise unchanged.
+
+For uncertainty bands there is an **opt-in** companion,
+`solve_martin_stochastic(database, adjustments, horizon, coefficients,
+estimation_end, scenario, n_draws = 200L, ...)`, returning a tidy tibble
+`(variable, quarter, value, lower, upper, scenario)` where `value` is the
+central deterministic path (identical to `solve_martin()`) and
+`lower`/`upper` are the 2.5%/97.5% Monte-Carlo band edges. It uses
+`bimets::STOCHSIMULATE` when available (perturbing each behavioural
+disturbance by its regression standard error) and a documented add-factor
+perturbation fallback otherwise; `attr(out, "band_method")` records which.
+The deterministic path remains the default; callers must opt in to bands.
 
 A frozen MARTINDATA fixture is shipped in `inst/extdata/` so the regression
 test (see below) is deterministic and does not need `sibyldata` to be live.
@@ -150,21 +190,34 @@ adjustment(
   equation,        # character, MARTIN equation code (e.g. "PTM")
   horizon,         # tsibble or yearquarter vector
   value,           # numeric vector same length as horizon
-  tail = c("decay_50", "carry", "zero"),  # how beyond-horizon cells are filled
+  tail = c("carry", "zero", "decay_50"),  # how beyond-horizon cells are filled
   rationale,       # character — the why
   channel,         # character — the chain of downstream variables (e.g. "PTM → P → PC")
   expected_effect, # character — what the adjustment should do (for round-trip check)
   confidence = c("high", "medium", "low"),
+  target_variable,    # MARTIN var the AF should move (for mechanical_audit)
+  expected_direction, # "up" / "down" / "none" / NA (for mechanical_audit)
   owner,           # who proposed it
   round_id,        # which round this belongs to
   source = c("human", "llm")   # was this proposed by a human or by the LLM
 )
 ```
 
-The `tail` field codifies the EViews `_a = _a(-1) * -0.5` convention from
-[references/MARTIN-master/Programs/solve_model.prg](references/MARTIN-master/Programs/solve_model.prg):
-`"decay_50"` reproduces that exact behaviour, `"carry"` holds the last value
-forward, `"zero"` truncates.
+The `tail` field controls how cells beyond the explicit horizon are filled.
+The default is **`"carry"`** — hold the last value forward, which is what a
+sustained narrative shock almost always means. `"zero"` truncates.
+`"decay_50"` reproduces the EViews `_a = _a(-1) * -0.5` convention from
+[references/MARTIN-master/Programs/solve_model.prg](references/MARTIN-master/Programs/solve_model.prg).
+Note that the EViews rule governs the **handover of historical residuals**
+into the forecast period — it damps the model's own last-observed errors,
+not a forecaster's deliberate shock. Applied as a tail to a *sustained
+judgement shock* it flips sign every quarter, which is almost never what a
+narrative intends; that is why `decay_50` is no longer the default and is
+kept only for the rare case where the historical-residual semantics are
+genuinely wanted. Add-factor magnitudes and horizon length are also bounded
+by per-unit ceilings (`validate_adjustment_bounds()`: `log_diff <= 0.02`,
+`level <= 1.0`, `percent <= 5.0` per quarter, horizon `<= 60` quarters),
+overridable via `options(sibyl.af_ceiling=)` / `options(sibyl.af_horizon_ceiling=)`.
 
 `adjustment_list` is a list of `adjustment` objects. Numeric expansion onto
 a continuous quarter range (applying each adjustment's horizon values and
@@ -183,9 +236,21 @@ This is the most important structural feature of SIBYL. The full path is:
 1. Human writes a narrative.
 2. LLM proposes `adjustment_list` (with rationales and `expected_effect`),
    informed by a pre-computed **sensitivity matrix** that shows the
-   propagation of a standardised unit shock on each adjustable equation.
-3. Human reviews the proposal as a table — accepts, edits, or rejects.
-4. `martin::solve_martin()` produces a projection.
+   propagation of a standardised unit shock on each adjustable equation. The
+   matrix now carries a **linearity probe**: it also solves each equation at
+   3x the standardised shock and reports `deviation_3x`, `curvature_ratio`
+   (`= deviation_3x / (3 * deviation)`, ~1 if linear) and `linearity_ok`, so
+   the prompt builder can refuse to scale a deviation linearly where the model
+   is non-linear, and a per-equation `converged` flag so a blown-up probe
+   hands the LLM `NA` rather than garbage.
+3. Human reviews the proposal as a table — accepts, edits, or rejects — via
+   `review_and_approve()`, which is interactive by default (`interactive =
+   base::interactive()`) and round-trips the `exogenize` list through a
+   sidecar so variables held at baseline survive the gate.
+4. `martin::solve_martin()` produces a projection. A deterministic,
+   LLM-independent `mechanical_audit()` then checks each adjustment's declared
+   `target_variable`/`expected_direction` against the realised
+   projection-minus-baseline diff, before any narrative-level audit runs.
 5. LLM reads the projection and (deliberately blind to the narrative)
    drafts a description of how the projection differs from baseline.
 6. A second LLM step compares narrative against description; if any
@@ -222,10 +287,16 @@ for the full implementation walkthrough with a worked example.**
 - Re-implementing the EViews state-space estimation of unobservables
   (NAIRU, RSTAR, PI_E) for v0. We'll lift the published values via the
   `_MARTIN` splice and revisit later.
-- Re-estimating MARTIN coefficients for v0. We freeze the values shipped in
-  `MARTINMOD_AF.txt` and revisit once the rest of the pipeline is stable.
-- Probabilistic / stochastic projections. SIBYL produces a single solved path
-  per scenario, not a fan chart.
+- Re-estimating MARTIN coefficients over a non-published sample by default.
+  The v0 default is **frozen**: `bimets::ESTIMATE` still re-fits the free
+  coefficients on every load, but on the model file's published 2019Q3
+  `TSRANGE`, so it reproduces the published values. Re-estimating across a
+  later sample is an explicit opt-in (`coefficients = "reestimated"` +
+  `estimation_end`), not a default.
+- Stochastic projections **on the default path**. `solve_martin()` produces a
+  single solved path per scenario. Monte-Carlo uncertainty bands are available
+  as an opt-in via `solve_martin_stochastic()` (STOCHSIMULATE-backed, with a
+  documented add-factor-perturbation fallback); callers must request them.
 
 ## Relationship to the reference repos
 
@@ -305,11 +376,22 @@ In order:
    full pipeline, and feeds the resulting hybrid (live + fixture for
    uncovered series) into `martin::solve_martin()`. End-to-end solve
    succeeds: 5460 rows, 156 vars, headline aggregates sensible (Y =
-   AUD 584b at 2018Q3, LUR = 4.93 %). Live pipeline now covers 113 of
-   the fixture's 205 MARTIN variables (55 %); remaining 92 are dummies
-   (D_AFC*, D_GST*, etc. — deterministic from dates), IAD weights
-   (scalars from IO tables), and state-space estimates (TDLLA, TDLLPOP,
-   TDLLHPP, PI_E, TLUR, RSTAR — still spliced from `martin_public.wf1`).
+   AUD 584b at 2018Q3, LUR = 4.93 %). The honest way to read coverage is a
+   **provenance manifest**, not a single percentage: `to_martin_database()`
+   now attaches `attr(db, "provenance")` (read via
+   `sibyldata::database_provenance(db)`) classifying every variable as one of
+   `{live, fixture_fallback, vendored_wf1, proxy, dummy, derived, unknown}`.
+   The live path supplies ~113 of the fixture's 205 MARTIN variables; the rest
+   are `dummy` (D_AFC*, D_GST*, etc. — deterministic from dates), IAD-weight
+   scalars (IO tables), `vendored_wf1` state-space estimates (TDLLA, TDLLPOP,
+   TDLLHPP, PI_E, TLUR, RSTAR spliced from `martin_public.wf1`), `proxy`
+   (FRED-US stand-ins for world variables), and `fixture_fallback` for
+   long-history series. A "100% coverage" headline conflates these distinct
+   source classes and should be read off the manifest instead. Note also that
+   the catalogue's "vintage" column is a **fetch-date stamp**, not a
+   point-in-time / realtime vintage: a live round is not bit-reproducible
+   against a past date until realtime fetch arguments are added. `renv.lock`
+   is committed so the R dependency set is pinned.
 
    **Outstanding for sibyldata:** automated construction of dummy series
    from a date-rule registry (~20 vars); IO-weight scalars (from the
@@ -320,11 +402,17 @@ In order:
    `fable::ARIMA()` / `ETS()` / `NAIVE()` per handover variable, with
    `bimets <-> tsibble` conversion helpers and ragged-edge handling
    (each variable forecasts h quarters past its own last observed value).
-   `handover_variables()` curates the headline set. Full chop-and-recover
-   evaluation against the bundled fixture: ARIMA, h=2, recovers 82% of 44
-   handover variables within 5% mean relative error. **Outstanding:** monthly
-   bridge equations using LFS / retail-trade / building-approvals as
-   leading indicators (v0.1).
+   `handover_variables()` curates the headline set. The committed
+   chop-and-recover backtest (`packages/nowcast/inst/eval/handover_backtest.R`,
+   44 handover variables, 88 held-out points, H=2, pre-COVID fixture) gives a
+   **growth-rate bridge MAPE of 9.8%** (best of bridge / arima / naive), 82%
+   of points within 5%, 89% within 10% — see
+   [packages/nowcast/inst/eval/handover_backtest.md](packages/nowcast/inst/eval/handover_backtest.md).
+   The bridge is fable's constrained AR(1)+seasonal-AR(1) ARIMA on the fixture
+   (no monthly indicators present), with the monthly-indicator `bridge_monthly`
+   exercised by synthetic unit tests. **Outstanding:** monthly bridge
+   equations using LFS / retail-trade / building-approvals as leading
+   indicators (v0.1).
 5. ✅ `judgement::propose_adjustments()` — ellmer + structured output via
    `type_object` + `type_array`. Returns a validated `adjustment_list`,
    with every adjustment cross-checked against

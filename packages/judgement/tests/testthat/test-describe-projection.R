@@ -184,6 +184,208 @@ test_that("diagnose_audit() detects variables via plain-English keywords", {
   expect_equal(out$category, c("model_response", "model_response"))
 })
 
+test_that("detect_variable_in_claim() routes trimmed-mean inflation to PTM", {
+  known <- c("LUR", "TLUR", "NCR", "PTM", "P", "Y", "PW")
+  # The bug: generic 'inflation' -> P would steal these. PTM phrasings must
+  # win because they come first in the keyword map.
+  expect_equal(
+    judgement:::detect_variable_in_claim("trimmed-mean inflation eases", known),
+    "PTM"
+  )
+  expect_equal(
+    judgement:::detect_variable_in_claim("underlying inflation stays high", known),
+    "PTM"
+  )
+  expect_equal(
+    judgement:::detect_variable_in_claim("core inflation is sticky", known),
+    "PTM"
+  )
+  # Generic headline inflation still maps to P.
+  expect_equal(
+    judgement:::detect_variable_in_claim("headline inflation rises", known),
+    "P"
+  )
+  expect_equal(
+    judgement:::detect_variable_in_claim("inflation broadly stable", known),
+    "P"
+  )
+})
+
+test_that("detect_variable_in_claim() maps wages and services", {
+  known <- c("LUR", "NCR", "PTM", "P", "Y", "PW", "PAE")
+  expect_equal(
+    judgement:::detect_variable_in_claim("wage growth accelerates", known),
+    "PW"
+  )
+  expect_equal(
+    judgement:::detect_variable_in_claim("services inflation stays elevated", known),
+    "PTM"
+  )
+})
+
+test_that("detect_variable_in_claim() returns NA when no variable present", {
+  known <- c("LUR", "NCR", "PTM", "P", "Y")
+  expect_true(is.na(
+    judgement:::detect_variable_in_claim("the outlook is broadly benign", known)
+  ))
+  # Non-scalar / non-character inputs are NA too.
+  expect_true(is.na(judgement:::detect_variable_in_claim(NA, known)))
+})
+
+test_that("diagnose_audit() routes a trimmed-mean claim to PTM, not P", {
+  audit <- tibble::tibble(
+    claim  = "Trimmed-mean inflation will rise by 0.3pp",
+    status = "disagree",
+    note   = "undershoot"
+  )
+  attr(audit, "overall_match") <- "disagree"
+  baseline <- tibble::tibble(
+    variable = c("PTM", "P"), quarter = "2025Q4",
+    value = c(0.6, 100), scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = c("PTM", "P"), quarter = "2025Q4",
+    value = c(0.65, 100.5), scenario = "scenario"
+  )
+  out <- diagnose_audit(audit, projection, baseline)
+  expect_equal(out$variable, "PTM")          # not P
+  expect_equal(out$category, "translation_gap")
+  expect_equal(out$diff_at_end, 0.05, tolerance = 1e-9)
+})
+
+test_that("diagnose_audit() flags an audit artifact as narrative_conflict", {
+  # Claim asserts no change, the variable genuinely did NOT move, yet the
+  # audit marked disagree -> narrative_conflict (likely an audit artifact).
+  audit <- tibble::tibble(
+    claim  = "No change to the cash rate path",
+    status = "disagree",
+    note   = "auditor disagreed despite no move"
+  )
+  attr(audit, "overall_match") <- "disagree"
+  baseline <- tibble::tibble(
+    variable = "NCR", quarter = "2025Q4", value = 3.0, scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = "NCR", quarter = "2025Q4", value = 3.0, scenario = "scenario"
+  )
+  out <- diagnose_audit(audit, projection, baseline)
+  expect_equal(out$variable, "NCR")
+  expect_equal(out$category, "narrative_conflict")
+  expect_match(out$explanation, "audit artifact")
+})
+
+# ---- mechanical_audit() --------------------------------------------------
+
+test_that("mechanical_audit() agrees when the realised diff matches direction", {
+  skip_if_not_installed("martin")
+  a <- adjustment(
+    equation = "PTM", horizon = c("2026Q1", "2026Q2"),
+    value = c(0.001, 0.001), rationale = "sticky inflation",
+    tail = "carry", confidence = "medium", source = "llm",
+    target_variable = "P", expected_direction = "up"
+  )
+  adjustments <- adjustment_list(a)
+  baseline <- tibble::tibble(
+    variable = "P", quarter = c("2026Q1", "2026Q2"),
+    value = c(100, 100), scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = "P", quarter = c("2026Q1", "2026Q2"),
+    value = c(100.2, 100.5), scenario = "scenario"  # P up at horizon end
+  )
+  out <- mechanical_audit(adjustments, projection, baseline)
+  expect_s3_class(out, "tbl_df")
+  expect_setequal(
+    names(out),
+    c("equation", "target_variable", "expected_direction",
+      "realised_diff", "agrees")
+  )
+  expect_equal(out$target_variable, "P")
+  expect_equal(out$realised_diff, 0.5, tolerance = 1e-9)
+  expect_true(out$agrees)
+})
+
+test_that("mechanical_audit() disagrees on a contradicted direction", {
+  skip_if_not_installed("martin")
+  a <- adjustment(
+    equation = "LUR", horizon = c("2026Q1", "2026Q2"),
+    value = c(-0.05, -0.05), rationale = "tightening labour market",
+    tail = "carry", confidence = "medium", source = "llm",
+    target_variable = "LUR", expected_direction = "down"
+  )
+  adjustments <- adjustment_list(a)
+  baseline <- tibble::tibble(
+    variable = "LUR", quarter = c("2026Q1", "2026Q2"),
+    value = c(4.0, 4.0), scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = "LUR", quarter = c("2026Q1", "2026Q2"),
+    value = c(4.0, 4.2), scenario = "scenario"  # LUR rose -> contradicts down
+  )
+  out <- mechanical_audit(adjustments, projection, baseline)
+  expect_false(out$agrees)
+  expect_equal(out$realised_diff, 0.2, tolerance = 1e-9)
+})
+
+test_that("mechanical_audit() returns NA agreement when nothing to check", {
+  skip_if_not_installed("martin")
+  # One adjustment declares no target (skipped: no row); one declares a
+  # target absent from the projection (row with agrees = NA).
+  a_no_target <- adjustment(
+    equation = "PTM", horizon = "2026Q1", value = 0.001,
+    rationale = "no target declared", tail = "carry",
+    confidence = "medium", source = "llm"
+  )
+  a_missing_var <- adjustment(
+    equation = "NCR", horizon = "2026Q1", value = 0.25,
+    rationale = "target not in projection", tail = "carry",
+    confidence = "medium", source = "llm",
+    target_variable = "RBR", expected_direction = "up"
+  )
+  adjustments <- adjustment_list(a_no_target, a_missing_var)
+  baseline <- tibble::tibble(
+    variable = "NCR", quarter = "2026Q1", value = 3.0, scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = "NCR", quarter = "2026Q1", value = 3.5, scenario = "scenario"
+  )
+  out <- mechanical_audit(adjustments, projection, baseline)
+  # Only the target-declaring adjustment yields a row; RBR isn't in the
+  # projection so agreement is NA.
+  expect_equal(nrow(out), 1L)
+  expect_equal(out$target_variable, "RBR")
+  expect_true(is.na(out$realised_diff))
+  expect_true(is.na(out$agrees))
+})
+
+test_that("mechanical_audit() handles 'none' direction and empty lists", {
+  skip_if_not_installed("martin")
+  expect_equal(
+    nrow(mechanical_audit(adjustment_list(),
+                          tibble::tibble(variable = character(),
+                                         quarter = character(),
+                                         value = numeric()),
+                          tibble::tibble(variable = character(),
+                                         quarter = character(),
+                                         value = numeric()))),
+    0L
+  )
+  a <- adjustment(
+    equation = "NCR", horizon = "2026Q1", value = 0.0,
+    rationale = "held flat", tail = "carry",
+    confidence = "medium", source = "llm",
+    target_variable = "NCR", expected_direction = "none"
+  )
+  baseline <- tibble::tibble(
+    variable = "NCR", quarter = "2026Q1", value = 3.0, scenario = "baseline"
+  )
+  projection <- tibble::tibble(
+    variable = "NCR", quarter = "2026Q1", value = 3.0, scenario = "scenario"
+  )
+  out <- mechanical_audit(adjustment_list(a), projection, baseline)
+  expect_true(out$agrees)  # no move, direction none -> agrees
+})
+
 # Live tests
 test_that("describe_projection() round-trips with live Anthropic Claude", {
   skip_if(Sys.getenv("ANTHROPIC_API_KEY") == "",

@@ -79,20 +79,38 @@ The pipeline runs end-to-end. A round goes:
 1. **Data** — `sibyldata::update_data()` pulls live ABS, RBA, FRED, OECD,
    World Bank, and BoM panels, splices them onto MARTIN's variable schema,
    and applies derived formulas + identity chains + state-space-smoothed
-   trends (PI_E, TLUR, RSTAR).
+   trends (PI_E, TLUR, RSTAR). `to_martin_database()` attaches a **provenance
+   manifest** (`database_provenance(db)`) classifying every variable as
+   `live` / `fixture_fallback` / `vendored_wf1` / `proxy` / `dummy` /
+   `derived`, so coverage is read off the manifest rather than a single
+   headline percentage. Note the catalogue "vintage" is a fetch-date stamp,
+   not a point-in-time vintage (a past round is not yet bit-reproducible until
+   realtime fetch args are added); `renv.lock` is committed to pin the R
+   dependency set.
 2. **Nowcast** — `nowcast::nowcast_handover()` bridges the ragged edge
    between the last quarterly observation and the projection start using
-   monthly indicators (`bridge_monthly`) with ARIMA fallback.
+   monthly indicators (`bridge_monthly`, working on growth rates) with an
+   ARIMA fallback. A committed chop-and-recover backtest on the bundled
+   fixture posts a bridge MAPE of 9.8% (82% of points within 5%); see
+   [packages/nowcast/inst/eval/handover_backtest.md](packages/nowcast/inst/eval/handover_backtest.md).
 3. **Baseline solve** — `martin::solve_martin()` runs `bimets::SIMULATE`
-   against MARTIN with no add-factors, optionally re-estimating
-   coefficients through a user-specified quarter.
+   against MARTIN with no add-factors. The default is **frozen**
+   coefficients: `bimets::ESTIMATE` re-fits MARTIN's free coefficients on
+   every load, but on the model file's published 2019Q3 estimation sample, so
+   it reproduces the published values. Re-estimating across a later sample is
+   an explicit opt-in (`coefficients = "reestimated"` + `estimation_end`).
+   `solve_martin_stochastic()` adds opt-in Monte-Carlo uncertainty bands.
 4. **Sensitivity pre-compute** — `martin::sensitivity_matrix()`
    simulates a standardised unit shock on each of the 56 adjustable
    equations once, recording propagation onto headline aggregates.
 5. **LLM round** — `judgement::propose_with_refinement()` does the
    agentic loop: propose add-factors against the narrative + sensitivity
-   matrix, solve, describe (blind), audit, refine if needed, pick the
-   best iteration.
+   matrix (which carries a linearity probe so deviations aren't scaled
+   blindly through MARTIN's non-linearity), solve, describe (blind), audit,
+   refine if needed, pick the best iteration. Proposed add-factors pass
+   through `review_and_approve()` (interactive by default) before MARTIN
+   solves, and a deterministic `mechanical_audit()` checks each adjustment's
+   declared target/direction against the realised diff.
 6. **Report** — `reports/round.qmd` renders the full round with
    narrative coherence diagnostics.
 

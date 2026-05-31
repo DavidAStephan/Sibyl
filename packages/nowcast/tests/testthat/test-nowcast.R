@@ -114,6 +114,69 @@ test_that("splice_handover() rejects malformed handover", {
                "missing required columns")
 })
 
+# --- guards: interior NA, gaps, overwrite, non-finite ----------------------
+
+test_that("nowcast rejects a series with an interior NA hole", {
+  # A hole in the middle of the history would let fable fit through an
+  # implicit gap and return an NA forecast. The conversion guard must stop.
+  v <- as.numeric(synth_database()$Y)
+  v[40] <- NA  # punch an interior hole
+  db <- list(Y = bimets::TIMESERIES(v, START = c(2000, 1), FREQ = 4))
+  expect_error(
+    nowcast_handover(db, h = 2, method = "naive", variables = "Y"),
+    "interior NA"
+  )
+})
+
+test_that("nowcast tolerates trailing NAs (the benign ragged edge)", {
+  v <- c(as.numeric(synth_database()$Y), NA, NA)
+  db <- list(Y = bimets::TIMESERIES(v, START = c(2000, 1), FREQ = 4))
+  out <- nowcast_handover(db, h = 2, method = "naive", variables = "Y")
+  expect_equal(nrow(out), 2L)
+  expect_true(all(is.finite(out$central)))
+})
+
+test_that("splice_handover() does not clobber observed cells by default", {
+  db <- synth_database()
+  last_y <- as.numeric(db$Y)[length(as.numeric(db$Y))]
+  # Forecast aimed at the LAST observed quarter (a re-nowcast of a
+  # provisional print). Default overwrite = FALSE leaves the observed value.
+  lq <- last_observed_quarter(db$Y)
+  ho <- tibble::tibble(
+    variable = "Y", quarter = lq,
+    central  = last_y + 999, lower = last_y + 998, upper = last_y + 1000,
+    method   = "naive"
+  )
+  kept <- splice_handover(db, ho)
+  n <- length(as.numeric(kept$Y))
+  expect_equal(as.numeric(kept$Y)[n], last_y)  # untouched
+
+  forced <- splice_handover(db, ho, overwrite = TRUE)
+  expect_equal(as.numeric(forced$Y)[n], last_y + 999)  # overwritten
+})
+
+test_that("splice_handover() errors on a gap (sequencing bug)", {
+  db <- synth_database()
+  lq <- last_observed_quarter(db$Y)
+  # Skip a quarter: jump two quarters past the last observation.
+  gap_q <- lq + 2L
+  ho <- tibble::tibble(
+    variable = "Y", quarter = gap_q,
+    central  = 1, lower = 0, upper = 2, method = "naive"
+  )
+  expect_error(splice_handover(db, ho), "gap")
+})
+
+test_that("splice_handover() refuses a non-finite central value", {
+  db <- synth_database()
+  lq <- last_observed_quarter(db$Y)
+  ho <- tibble::tibble(
+    variable = "Y", quarter = lq + 1L,
+    central  = NA_real_, lower = NA_real_, upper = NA_real_, method = "naive"
+  )
+  expect_error(splice_handover(db, ho), "non-finite")
+})
+
 # Held-out evaluation against the bundled MARTIN fixture. This is the
 # closest we get to "did the pipeline really work" in nowcast — chop, fit,
 # forecast, compare.
@@ -199,7 +262,7 @@ make_synthetic_bridge <- function() {
   list(target = tgt_ts, indicator = ind_ts)
 }
 
-test_that("bridge_monthly recovers a known linear relationship", {
+test_that("bridge_monthly recovers a known growth relationship", {
   s <- make_synthetic_bridge()
   out <- nowcast_handover(
     database  = list(Y = s$target),
@@ -213,11 +276,41 @@ test_that("bridge_monthly recovers a known linear relationship", {
                   c("variable", "quarter", "central", "lower", "upper",
                     "method"))
   expect_equal(nrow(out), 2L)
-  # Predictions should be ~ 2 * (recent indicator mean)
+  # The bridge is now specified in GROWTH RATES: it chains predicted growth
+  # onto the last observed target level, rather than predicting the level
+  # directly from a (spurious) levels-on-levels regression. Since target ~=
+  # 2 * indicator and the indicator is still drifting up, the Q+0 forecast
+  # should sit near 2 * (recent indicator mean) and near the last observed
+  # target level. Use level-aware (percentage) tolerances.
   ind_recent <- mean(tail(as.numeric(s$indicator), 6))
-  expect_lt(abs(out$central[1] - 2 * ind_recent), 1.0,
-            label = "bridge_monthly prediction within 1.0 of 2*indicator")
+  expect_lt(abs(out$central[1] - 2 * ind_recent), 0.05 * (2 * ind_recent),
+            label = "bridge_monthly Q+0 within 5% of 2*recent-indicator")
+  last_tgt <- tail(as.numeric(s$target), 1)
+  expect_lt(abs(out$central[1] - last_tgt), 0.10 * last_tgt)
+  expect_true(all(is.finite(out$central)))
+  expect_true(all(out$lower <= out$central & out$central <= out$upper))
   expect_true(all(out$method == "bridge_monthly[HOURS]"))
+})
+
+test_that("bridge_monthly partial-quarter point stays finite and bracketed", {
+  # Drop the indicator's final months so the last indicator quarter is
+  # partial; the partial-quarter widening path should still return a finite,
+  # bracketed band.
+  s <- make_synthetic_bridge()
+  ind_v <- as.numeric(s$indicator)
+  ind_trim <- bimets::TIMESERIES(ind_v[seq_len(length(ind_v) - 2L)],
+                                 START = c(2010, 1), FREQ = 12)
+  out <- nowcast_handover(
+    database  = list(Y = s$target),
+    h         = 2,
+    method    = "bridge_monthly",
+    variables = "Y",
+    bridge_indicators  = list(Y = "HOURS"),
+    monthly_indicators = list(HOURS = ind_trim)
+  )
+  expect_equal(nrow(out), 2L)
+  expect_true(all(is.finite(out$central)))
+  expect_true(all(out$lower <= out$central & out$central <= out$upper))
 })
 
 test_that("bridge_monthly falls back to ARIMA when indicator missing", {

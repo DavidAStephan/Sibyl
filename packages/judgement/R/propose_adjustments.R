@@ -276,6 +276,8 @@ format_audit_table <- function(audit) {
 #'   * `description`: the final description.
 #'   * `audit`: the final audit tibble.
 #'   * `history`: a list of per-iteration entries, each with the same fields.
+#'   * `provenance`: per-step model ids and whether a chat was supplied
+#'     (test path) vs fresh role-specific chats (production), for auditability.
 #' @export
 propose_with_refinement <- function(narrative,
                                     baseline,
@@ -365,6 +367,24 @@ propose_with_refinement <- function(narrative,
   # toward the earliest iteration (fewest AFs, simplest explanation).
   best_idx <- pick_best_iteration(history)
   best <- history[[best_idx]]
+  # Provenance: the exact per-step model ids used, plus a note that in
+  # production each step runs on a FRESH role-specific chat (chat = NULL),
+  # so the blind describer is genuinely isolated from the proposer. Additive
+  # and non-breaking -- callers that ignore it are unaffected.
+  provenance <- list(
+    model_propose  = model_propose,
+    model_describe = model_describe,
+    model_audit    = model_audit,
+    supplied_chat  = !is.null(chat),
+    note = if (is.null(chat)) {
+      paste("Production path: propose / describe / audit each used a fresh",
+            "role-specific chat (chat = NULL); the describer was blind to",
+            "the narrative and to the proposer's context.")
+    } else {
+      paste("A chat object was supplied (test path); describe / audit shared",
+            "the injected mock rather than fresh isolated chats.")
+    }
+  )
   list(
     adjustments = best$adjustments,
     exogenize   = best$exogenize,
@@ -372,7 +392,8 @@ propose_with_refinement <- function(narrative,
     description = best$description,
     audit       = best$audit,
     history     = history,
-    best_iter   = best_idx
+    best_iter   = best_idx,
+    provenance  = provenance
   )
 }
 
@@ -422,11 +443,21 @@ format_historical_afs <- function(historical_afs) {
 #' `confidence`, and `horizon` are honoured; the row order is preserved.
 #' Deleting a row drops that adjustment.
 #'
+#' A hidden, non-editable `adjustment_id` column is written into the CSV so
+#' rows are regrouped by a stable key on read (not by the user-editable
+#' `(equation, rationale)` pair, which collides when two adjustments share an
+#' equation and rationale over disjoint horizons).
+#'
+#' The proposal's `"exogenize"` attribute (variables to hold at baseline) is
+#' persisted to a sidecar file (`paste0(csv_path, ".exogenize")`), shown to
+#' the human, and re-attached to the approved list so it survives the gate.
+#'
 #' @param proposed An `adjustment_list`.
 #' @param interactive Logical. Set `FALSE` to bypass the human gate (e.g. in
 #'   tests or unattended pipelines).
 #' @param csv_path Path to write the review CSV. Defaults to a tempfile.
-#' @return An `adjustment_list` containing only the approved subset.
+#' @return An `adjustment_list` containing only the approved subset, carrying
+#'   the same `"exogenize"` attribute as `proposed`.
 #' @export
 review_and_approve <- function(proposed,
                                interactive = base::interactive(),
@@ -438,6 +469,8 @@ review_and_approve <- function(proposed,
     return(proposed)
   }
 
+  exogenize <- attr(proposed, "exogenize") %||% character(0)
+
   if (!isTRUE(interactive)) {
     message("review_and_approve: non-interactive mode; ",
             "returning proposed adjustments unchanged.")
@@ -448,23 +481,84 @@ review_and_approve <- function(proposed,
     csv_path <- tempfile("sibyl-review-", fileext = ".csv")
   }
 
-  # Write proposals
+  # Write proposals with a hidden stable id keyed to the original list index
+  # (one id per adjustment, broadcast over its horizon rows). The human edits
+  # values / rationales / horizons but should not touch adjustment_id; it is
+  # how reconstruct_adjustments regroups rows back into adjustments.
   tbl <- as_tibble_adjustments(proposed)
+  tbl <- add_adjustment_ids(tbl, proposed)
   utils::write.csv(tbl, csv_path, row.names = FALSE)
+
+  # Persist the exogenize list to a sidecar so it survives the round-trip.
+  exo_path <- paste0(csv_path, ".exogenize")
+  writeLines(exogenize, exo_path)
+
   cat("\n--- SIBYL review gate ----------------------------------------\n")
   cat("Proposed adjustments written to:\n  ", csv_path, "\n", sep = "")
+  if (length(exogenize)) {
+    cat("Variables to EXOGENISE (held at baseline) -- edit in:\n  ",
+        exo_path, "\n", sep = "")
+    cat("  ", paste(exogenize, collapse = ", "), "\n", sep = "")
+  } else {
+    cat("No variables exogenised this round.\n")
+  }
   cat("Edit values / rationales / horizon, delete rows you reject,\n")
-  cat("save, then press Enter to continue.\n")
+  cat("(leave the adjustment_id column alone), save, then press Enter.\n")
   readline(prompt = "Press Enter when ready: ")
 
-  # Re-read and reconstruct adjustments
+  # Re-read and reconstruct adjustments, then re-attach the (possibly
+  # human-edited) exogenize list from its sidecar.
   edited <- utils::read.csv(csv_path, stringsAsFactors = FALSE)
-  reconstruct_adjustments(edited, original = proposed)
+  approved <- reconstruct_adjustments(edited, original = proposed)
+  attr(approved, "exogenize") <- read_exogenize_sidecar(exo_path, exogenize)
+  approved
 }
 
-# Reconstruct an adjustment_list from an edited review CSV. Groups rows by
-# (equation, rationale) to recover horizon vectors; preserves metadata that
-# isn't user-editable (round_id, owner, source) from the original proposals.
+# Broadcast a stable per-adjustment id onto the tibble's rows. The id is the
+# original list position, zero-padded so lexical sort == numeric order. We
+# join by the (equation, quarter) pair each row carries, but the canonical
+# source of truth is the order of `proposed` -- so we build the id column by
+# replaying the same expansion as_tibble_adjustments() used (one block of
+# length(horizon) rows per adjustment, in list order).
+add_adjustment_ids <- function(tbl, proposed) {
+  ids <- unlist(lapply(seq_along(proposed), function(i) {
+    rep(sprintf("af_%03d", i), length(proposed[[i]]$horizon))
+  }))
+  # as_tibble_adjustments() emits rows in the same order, so a direct bind is
+  # correct and order-preserving.
+  if (length(ids) != nrow(tbl)) {
+    # Defensive: should never happen, but fall back to row index rather than
+    # silently misaligning ids.
+    ids <- sprintf("af_%03d", seq_len(nrow(tbl)))
+  }
+  tbl$adjustment_id <- ids
+  tbl
+}
+
+# Read the exogenize sidecar back, falling back to `default` if the file is
+# missing (e.g. a human deleted it). Empty file -> character(0).
+read_exogenize_sidecar <- function(exo_path, default = character(0)) {
+  if (!file.exists(exo_path)) return(default)
+  lines <- readLines(exo_path, warn = FALSE)
+  lines <- trimws(lines)
+  lines <- lines[nzchar(lines)]
+  unique(lines)
+}
+
+# Reconstruct an adjustment_list from an edited review CSV.
+#
+# Rows are regrouped by the hidden `adjustment_id` column written at review
+# time (see add_adjustment_ids()), NOT by (equation, rationale): two distinct
+# adjustments can legitimately share an equation AND a rationale over disjoint
+# horizons, and grouping on those user-editable fields would silently merge
+# them and lose values. Grouping order follows the id order so the approved
+# list preserves the proposal order.
+#
+# If `adjustment_id` is absent (e.g. a CSV written by an older version, or a
+# hand-built fixture), we fall back to the legacy (equation, rationale) key.
+# Per-adjustment metadata that isn't user-editable (channel, expected_effect,
+# target_variable, expected_direction, round_id, owner) is recovered from the
+# matching original proposal.
 reconstruct_adjustments <- function(edited, original) {
   required <- c("equation", "quarter", "value", "rationale",
                 "tail", "confidence")
@@ -476,15 +570,32 @@ reconstruct_adjustments <- function(edited, original) {
   if (nrow(edited) == 0L) {
     return(adjustment_list())
   }
-  # Look-up of original metadata by (equation, rationale)
-  meta_lookup <- list()
-  for (a in original) {
-    key <- paste(a$equation, a$rationale, sep = "||")
-    meta_lookup[[key]] <- a
+
+  use_ids <- "adjustment_id" %in% names(edited) &&
+    !all(is.na(edited$adjustment_id))
+
+  if (use_ids) {
+    # Stable-id metadata lookup: id "af_001" -> original[[1]], etc.
+    meta_lookup <- stats::setNames(
+      as.list(original), sprintf("af_%03d", seq_along(original))
+    )
+    edited$.group_key <- as.character(edited$adjustment_id)
+    # Preserve id order (numeric within "af_###") rather than split()'s sort.
+    key_order <- unique(edited$.group_key)
+  } else {
+    # Legacy fallback: group on (equation, rationale).
+    meta_lookup <- list()
+    for (a in original) {
+      key <- paste(a$equation, a$rationale, sep = "||")
+      meta_lookup[[key]] <- a
+    }
+    edited$.group_key <- paste(edited$equation, edited$rationale, sep = "||")
+    key_order <- unique(edited$.group_key)
   }
 
-  edited$.group_key <- paste(edited$equation, edited$rationale, sep = "||")
   groups <- split(edited, edited$.group_key)
+  # Reorder split() output to the order keys first appear in the CSV.
+  groups <- groups[key_order]
 
   result <- lapply(groups, function(g) {
     g <- g[order(g$quarter), , drop = FALSE]
@@ -499,8 +610,12 @@ reconstruct_adjustments <- function(edited, original) {
                         else NA_character_,
       expected_effect = if (!is.null(base_meta)) base_meta$expected_effect
                         else NA_character_,
-      confidence      = g$confidence[1],
-      tail            = g$tail[1],
+      confidence         = g$confidence[1],
+      tail               = g$tail[1],
+      target_variable    = if (!is.null(base_meta)) base_meta$target_variable
+                           else NA_character_,
+      expected_direction = if (!is.null(base_meta))
+                             base_meta$expected_direction else NA_character_,
       owner           = if (!is.null(base_meta)) base_meta$owner
                         else NA_character_,
       round_id        = if (!is.null(base_meta)) base_meta$round_id

@@ -159,6 +159,13 @@ to_martin_database <- function(raw, frequency = "Q") {
   )
   attr(db, "skipped")       <- skipped
   attr(db, "derived_added") <- derived_added
+  # Provenance: classify every variable that actually made it into the
+  # database from the catalogue. At this point the database was built purely
+  # from the supplied `raw` panel, so data-backed rows are genuinely "live";
+  # merge_with_fallback() later promotes any variable the live path could not
+  # supply to "fixture_fallback". Additive only -- the database itself is
+  # unchanged. See database_provenance() for the accessor.
+  attr(db, "provenance")    <- classify_provenance(names(db), cat)
   db
 }
 

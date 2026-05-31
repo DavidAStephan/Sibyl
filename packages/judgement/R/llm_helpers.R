@@ -48,13 +48,36 @@ proposal_item_schema <- function() {
       description = "How confident the proposer is in the magnitude."
     ),
     tail = ellmer::type_enum(
-      c("decay_50", "carry", "zero"),
+      c("carry", "zero", "decay_50"),
       description = paste(
-        "How beyond-horizon cells should be filled. decay_50 (default for",
-        "shocks): geometric decay with sign flip, matching the EViews",
-        "_a(-1)*-0.5 convention. carry: hold the last value forward. zero:",
-        "truncate."
+        "How beyond-horizon cells should be filled. carry (DEFAULT): hold",
+        "the last value forward -- the right choice for a sustained",
+        "judgement shock or a regime change. zero: truncate to zero -- for",
+        "a one-off announcement. decay_50: geometric decay with a sign",
+        "flip. NOTE decay_50 reproduces the EViews _a(-1)*-0.5 rule, which",
+        "governs handover of HISTORICAL residuals, not deliberate shocks;",
+        "as a sustained-shock tail it oscillates sign every quarter, so use",
+        "it only when you specifically want that historical-residual",
+        "behaviour."
       )
+    ),
+    target_variable = ellmer::type_string(
+      paste(
+        "OPTIONAL. The single MARTIN variable this adjustment is primarily",
+        "expected to move (e.g. 'P' for a PTM adjustment, 'LUR' for a TLUR",
+        "adjustment). Used for a deterministic, LLM-independent fidelity",
+        "check. Leave empty if not applicable."
+      ),
+      required = FALSE
+    ),
+    expected_direction = ellmer::type_enum(
+      c("up", "down", "none"),
+      description = paste(
+        "OPTIONAL. The direction target_variable should move relative to",
+        "baseline: up, down, or none. Used together with target_variable",
+        "for the deterministic fidelity check."
+      ),
+      required = FALSE
     )
   )
 }
@@ -158,7 +181,7 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "",
     "       Example A — sticky inflation, PTM (units=log_diff)",
     "         Narrative: trimmed-mean inflation ~0.1pp/qtr higher than baseline",
-    "         AF: equation=PTM, values=0.001 repeated for 6 quarters, decay_50",
+    "         AF: equation=PTM, values=0.001 repeated for 6 quarters, carry",
     "         Realised: price level +1.3% by end-horizon, real Y/RC/GNE -0.5%,",
     "                   NCR +1pp via endogenous Taylor Rule. Round-trip: agree.",
     "",
@@ -175,7 +198,7 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "",
     "       Example C — direct cyclical labour gap, LUR (units=level)",
     "         Narrative: post-COVID structural tightening, LUR -1.6pp by 2024Q4",
-    "         AF: equation=LUR, values=-0.08 repeated for 20 quarters, decay_50",
+    "         AF: equation=LUR, values=-0.08 repeated for 20 quarters, carry",
     "         Realised: LUR -1.6pp by 2024Q4 — closes the gap directly. LUR's",
     "                   residual is on TSDELTA(LUR), so -0.08/qtr cumulates to",
     "                   -1.6pp over 20 quarters. Round-trip: agree.",
@@ -195,9 +218,12 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "     horizon_start + 1 quarters. Count carefully: 2025Q4 to 2027Q4 is 9",
     "     quarters (Q4 + 4 + 4), not 8 or 32. The parser will warn and",
     "     truncate/pad on mismatch but accurate counts produce better solves.",
-    "  6. Use decay_50 as the default tail rule for shocks (the EViews",
-    "     convention). Use carry for persistent regime changes, zero for",
-    "     one-off announcements.",
+    "  6. Use carry as the DEFAULT tail rule: a judgement shock should hold",
+    "     its last value forward beyond the explicit horizon. Use zero for",
+    "     one-off announcements. Only use decay_50 if you specifically want",
+    "     the EViews historical-residual handover semantics (geometric decay",
+    "     with a sign flip) -- it is NOT appropriate for a sustained shock,",
+    "     where it would oscillate sign every quarter.",
     "  7. Prefer fewer, targeted adjustments over many small ones.",
     "  8. If the narrative is silent on quantitative changes, return an empty",
     "     adjustments array.",
@@ -230,12 +256,17 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
         "For each adjustable equation, the table below shows what a",
         "standardized unit shock (e.g. +0.001/quarter on log_diff equations,",
         "+0.05/quarter on level equations, +0.10/quarter on percent",
-        "equations) sustained over 4 quarters with decay_50 actually does to",
+        "equations) sustained over 4 quarters with carry actually does to",
         "the headline aggregates, at offsets h+1, h+4, h+8, h+16 from the",
-        "shock start. USE THIS as your primary calibration source -- linear",
-        "scaling is approximately valid for AFs up to ~3x the standardized",
-        "shock, so to estimate the effect of a 2x shock, double the",
-        "deviations below.",
+        "shock start. Use this as a calibration ANCHOR, not an exact",
+        "multiplier: MARTIN is nonlinear, so a larger or longer shock will",
+        "NOT scale proportionally to the numbers below.",
+        "",
+        "Entries tagged [NONLINEAR ...] failed a curvature check (a 3x probe",
+        "did not give ~3x the deviation) -- do NOT scale those linearly to a",
+        "bigger or longer shock. Entries tagged [NON-CONVERGED] come from a",
+        "solve that did not converge cleanly and should be treated as",
+        "unreliable.",
         "",
         "Targets with no meaningful response (|dev_pct| < 0.05%) are omitted;",
         "equations with no meaningful response on any target are omitted",
@@ -328,6 +359,14 @@ format_sensitivity_text <- function(matrix,
   # Mark "rate-style" variables for which "pp" makes more sense than "%".
   rate_vars <- c("LUR", "TLUR", "NCR", "RBR", "LPR", "NMR", "PI_E")
 
+  # martin's sensitivity_matrix may now carry linearity / convergence
+  # diagnostics (deviation_3x, curvature_ratio, linearity_ok, converged).
+  # Surface them WHEN PRESENT and gracefully ignore when absent, so this
+  # function works against both the old and new matrix shapes.
+  has_linearity  <- "linearity_ok" %in% names(matrix)
+  has_curvature  <- "curvature_ratio" %in% names(matrix)
+  has_converged  <- "converged" %in% names(matrix)
+
   out <- list()
   for (eq in unique(matrix$equation)) {
     sub <- matrix[matrix$equation == eq, , drop = FALSE]
@@ -352,15 +391,29 @@ format_sensitivity_text <- function(matrix,
       } else {
         sprintf("h+%d=%+.2f%%", t$offset_q, t$deviation_pct)
       }
+      # Per-target nonlinearity / non-convergence caveat. The 4-quarter probe
+      # is linear; if martin flags this propagation as curved, the LLM must
+      # NOT scale it linearly to a 12-20-quarter shock.
+      caveat <- ""
+      if (has_linearity && any(!is.na(t$linearity_ok) & !t$linearity_ok)) {
+        cr <- if (has_curvature) {
+          stats::median(t$curvature_ratio[!is.na(t$curvature_ratio)])
+        } else NA_real_
+        caveat <- if (is.finite(cr)) {
+          sprintf("  [NONLINEAR: curvature~%.2f, do not scale linearly]", cr)
+        } else "  [NONLINEAR: do not scale linearly]"
+      } else if (has_converged && any(!is.na(t$converged) & !t$converged)) {
+        caveat <- "  [NON-CONVERGED: treat as unreliable]"
+      }
       lines[[length(lines) + 1L]] <- sprintf(
-        "  %-4s: %s%s", tgt, paste(cells, collapse = ", "),
-        if (is_own) "  [own equation]" else ""
+        "  %-4s: %s%s%s", tgt, paste(cells, collapse = ", "),
+        if (is_own) "  [own equation]" else "", caveat
       )
     }
     if (length(lines) == 0L) next
 
     header <- sprintf(
-      "- %s (units=%s, shock=%+g per quarter sustained over %d quarters, decay_50):",
+      "- %s (units=%s, shock=%+g per quarter sustained over %d quarters, carry):",
       eq, units, shock_val, shock_q
     )
     out[[length(out) + 1L]] <- paste(c(header, unlist(lines)), collapse = "\n")
@@ -391,8 +444,12 @@ parse_proposal_to_adjustment <- function(p,
   # LLMs miscount horizons by 1-3 quarters fairly routinely. Rather than
   # rejecting the whole proposal (and losing useful judgement), normalize
   # to the horizon length: truncate if values is too long, repeat the
-  # last value if too short. The forecaster can correct in review.
+  # last value if too short. The forecaster can correct in review. We flag
+  # the result `coerced` so the silent miscount stays visible downstream
+  # (printed in format.adjustment, surfaced in as_tibble_adjustments).
+  coerced <- FALSE
   if (length(p$values) != length(horizon)) {
+    coerced <- TRUE
     warning(sprintf(
       "Proposal on %s: LLM returned %d values for %d-quarter horizon; %s.",
       p$equation, length(p$values), length(horizon),
@@ -417,12 +474,29 @@ parse_proposal_to_adjustment <- function(p,
                         p$expected_effect else NA_character_,
     # ellmer's type_enum returns factors; adjustment() uses match.arg
     # which needs character.
-    confidence      = as.character(p$confidence),
-    tail            = as.character(p$tail),
-    owner           = owner,
-    round_id        = round_id,
-    source          = source
+    confidence         = as.character(p$confidence),
+    tail               = as.character(p$tail),
+    # OPTIONAL structured fields for the deterministic mechanical_audit().
+    # Absent from older fakes / human-edited rows, so guard with is.null and
+    # treat empty strings (ellmer's empty optional) as NA.
+    target_variable    = parse_optional_string(p$target_variable),
+    expected_direction = parse_optional_string(p$expected_direction),
+    coerced            = coerced,
+    owner              = owner,
+    round_id           = round_id,
+    source             = source
   )
+}
+
+# Coerce an optional structured-output string field to a clean scalar:
+# NULL / empty-string / NA all become NA_character_; otherwise the trimmed
+# first element. Keeps optional schema fields backward-compatible with fakes
+# and human-edited CSVs that simply omit them.
+parse_optional_string <- function(x) {
+  if (is.null(x) || length(x) == 0L) return(NA_character_)
+  x <- as.character(x)[1]
+  if (is.na(x) || !nzchar(trimws(x))) return(NA_character_)
+  trimws(x)
 }
 
 # Build a diff-from-baseline summary for describe_projection().
@@ -488,14 +562,27 @@ projection_diff_text <- function(projection,
   paste(lines, collapse = "\n")
 }
 
-# Get an LLM chat object. Prefers explicit `chat` argument so tests can
-# inject mocks; otherwise constructs a fresh ellmer chat. Anthropic by
-# default since that's the SIBYL-recommended model and `ANTHROPIC_API_KEY`
-# is what the .Renviron.example documents.
+# Get an LLM chat object.
+#
+# A SUPPLIED `chat` argument is for TESTS ONLY: it lets the suite inject a
+# deterministic mock so no network / API call happens. In production every
+# caller passes chat = NULL, which constructs a FRESH role-specific chat per
+# call (propose / describe / audit each get their own system prompt). This is
+# load-bearing for the round-trip audit: the blind describer must be a fresh
+# chat with no memory of the proposer's context, or the audit becomes
+# trivially satisfied.
+#
+# temperature is pinned to 0 for reproducibility: a forecast round should be a
+# deterministic function of (narrative, baseline, model) as far as the API
+# allows. Anthropic is the default since that's the SIBYL-recommended model
+# and `ANTHROPIC_API_KEY` is what .Renviron.example documents.
 get_chat <- function(chat = NULL,
                      system_prompt = NULL,
-                     model = "claude-opus-4-7") {
+                     model = "claude-opus-4-7",
+                     temperature = 0) {
   if (!is.null(chat)) {
+    # Test-injected mock: use it as-is (only set the system prompt so the
+    # role isolation still holds for fakes that record it).
     if (!is.null(system_prompt)) chat$set_system_prompt(system_prompt)
     return(chat)
   }
@@ -505,5 +592,9 @@ get_chat <- function(chat = NULL,
   if (Sys.getenv("ANTHROPIC_API_KEY") == "") {
     stop("ANTHROPIC_API_KEY is not set. Add it to .Renviron.", call. = FALSE)
   }
-  ellmer::chat_anthropic(system_prompt = system_prompt, model = model)
+  ellmer::chat_anthropic(
+    system_prompt = system_prompt,
+    model         = model,
+    params        = ellmer::params(temperature = temperature)
+  )
 }

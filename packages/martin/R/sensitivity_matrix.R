@@ -12,6 +12,20 @@
 #' the cost is approximately N_equations x simulate_time (a few seconds per
 #' equation) rather than N x full_solve.
 #'
+#' **Linearity is not assumed.** MARTIN is nonlinear, so a deviation measured
+#' at one shock size cannot be scaled freely to size a 12-20-quarter shock.
+#' With `probe_curvature = TRUE` (the default) each equation is also solved at
+#' 3x the standardized shock; the extra columns `deviation_3x`,
+#' `curvature_ratio` (= `deviation_3x / (3 * deviation)`, ~1 if linear) and
+#' `linearity_ok` (= `abs(curvature_ratio - 1) < 0.25`) let the caller see
+#' where linear scaling is safe and where it is not. These are NA when the
+#' probe is disabled or the 3x solve does not converge.
+#'
+#' **Garbage is never handed to the prompt.** Each shock's convergence is
+#' captured; if a solve leaves NaN/Inf in the simulated targets, that row's
+#' `deviation` (and `deviation_3x`) are set to NA and `converged = FALSE`,
+#' rather than silently emitting a meaningless number.
+#'
 #' @param database The same database passed to [solve_martin()].
 #' @param baseline A baseline projection tibble (from [solve_martin()] with
 #'   no adjustments) used as the comparison point. Must cover the offsets
@@ -33,12 +47,22 @@
 #' @param equations Optional character vector restricting the shocks to a
 #'   subset of equations. Default NULL = all adjustable equations from
 #'   [equation_catalogue()].
+#' @param probe_curvature Logical. If `TRUE` (default), also solve each
+#'   equation at 3x the standardized shock and emit the `deviation_3x`,
+#'   `curvature_ratio`, and `linearity_ok` columns so the caller can judge
+#'   where the linear-scaling assumption holds. Roughly doubles the cost.
 #' @param progress Logical; if TRUE prints a one-line progress update per
 #'   equation. Default `interactive()`.
 #'
 #' @return A tibble with one row per (equation, target, offset). Columns:
 #'   `equation`, `units`, `typical_af_sd`, `shock_value`, `shock_quarters`,
-#'   `target`, `offset_q`, `deviation`, `deviation_pct`.
+#'   `target`, `offset_q`, `deviation`, `deviation_pct`, `converged`
+#'   (logical: did the 1x solve leave finite target values?), and — when
+#'   `probe_curvature = TRUE` — `deviation_3x`, `curvature_ratio`
+#'   (`deviation_3x / (3 * deviation)`, ~1 if linear) and `linearity_ok`
+#'   (`abs(curvature_ratio - 1) < 0.25`). `deviation`/`deviation_3x` are NA
+#'   when the corresponding solve does not converge; the curvature columns
+#'   are NA when `probe_curvature = FALSE`.
 #'   Attributes: `shock_start`, `measure_offsets`, `baseline_scenario`.
 #' @export
 sensitivity_matrix <- function(database,
@@ -51,6 +75,7 @@ sensitivity_matrix <- function(database,
                                targets         = c("Y", "RC", "GNE", "LUR",
                                                    "PTM", "P", "NCR"),
                                equations       = NULL,
+                               probe_curvature = TRUE,
                                progress        = interactive()) {
   stopifnot(
     is.data.frame(baseline),
@@ -128,68 +153,63 @@ sensitivity_matrix <- function(database,
       i, n_eq, eq, shock_val, shock_quarters, units
     ))
 
-    # Construct the shock as a real adjustment_list with decay_50 tail, then
-    # expand it through the full horizon. This matches how user-supplied AFs
-    # are handled in solve_martin() (decay applies past the explicit
-    # horizon, so propagation at h+8/h+16 reflects real SIBYL conventions).
-    shock <- judgement::adjustment_list(
-      judgement::adjustment(
-        equation        = eq,
-        horizon         = shock_qs,
-        value           = rep(shock_val, shock_quarters),
-        rationale       = "sensitivity probe",
-        channel         = NA_character_,
-        expected_effect = NA_character_,
-        confidence      = "medium",
-        tail            = "decay_50",
-        owner           = "sensitivity_matrix",
-        round_id        = NA_character_,
-        source          = "human"
-      )
+    # 1x probe: the standardized shock. Returns a per-(target, offset)
+    # deviation lookup and a `converged` flag (FALSE if the solve left
+    # NaN/Inf in any target series — we never feed garbage to the prompt).
+    base1 <- run_sensitivity_shock(
+      model, eq, shock_val, shock_qs, shock_quarters, horizon, tsrange,
+      replay_afs, baseline_lookup, targets, measure_offsets, measure_qs
     )
-    user_expanded <- judgement::expand_adjustments(shock, horizon)
-    afs <- inject_user_adjustments(replay_afs, user_expanded)
 
-    sim_model <- .suppress_bimets_version_warning({
-      suppressWarnings(suppressMessages(bimets::SIMULATE(
-        model,
-        TSRANGE            = tsrange,
-        ConstantAdjustment = afs,
-        simConvergence     = 1e-6,
-        simIterLimit       = 100,
-        quietly            = TRUE
-      )))
-    })
+    # 3x probe (curvature). Reuse the loaded+estimated model; only the shock
+    # magnitude changes. Skipped when probe_curvature = FALSE.
+    base3 <- NULL
+    if (isTRUE(probe_curvature)) {
+      base3 <- run_sensitivity_shock(
+        model, eq, 3 * shock_val, shock_qs, shock_quarters, horizon, tsrange,
+        replay_afs, baseline_lookup, targets, measure_offsets, measure_qs
+      )
+    }
 
-    sim <- sim_model$simulation
     for (tgt in targets) {
-      tgt_ts <- sim[[tgt]]
-      if (is.null(tgt_ts)) next
-      tgt_t      <- as.numeric(stats::time(tgt_ts))
-      tgt_year   <- floor(tgt_t + 1e-9)
-      tgt_q      <- round((tgt_t - tgt_year) * 4 + 1)
-      tgt_labels <- sprintf("%04dQ%d", tgt_year, tgt_q)
-      tgt_vec    <- setNames(as.numeric(tgt_ts), tgt_labels)
-      base_vec   <- baseline_lookup[[tgt]]
-      if (is.null(base_vec)) next
-
+      if (is.null(baseline_lookup[[tgt]])) next
       for (j in seq_along(measure_offsets)) {
-        q <- measure_qs[j]
-        if (is.na(q) || is.null(tgt_vec[q]) || is.null(base_vec[q])) next
-        if (!q %in% names(tgt_vec) || !q %in% names(base_vec)) next
-        dev <- unname(tgt_vec[q]) - unname(base_vec[q])
-        base_at_q <- unname(base_vec[q])
-        dev_pct <- if (abs(base_at_q) > 1e-9) 100 * dev / abs(base_at_q) else NA_real_
+        key <- paste(tgt, measure_offsets[j], sep = "@")
+        cell1 <- base1$dev[[key]]
+        if (is.null(cell1)) next  # offset outside window / target absent
+        dev      <- if (base1$converged) cell1$deviation     else NA_real_
+        dev_pct  <- if (base1$converged) cell1$deviation_pct else NA_real_
+
+        dev_3x         <- NA_real_
+        curvature_ratio <- NA_real_
+        linearity_ok    <- NA
+        if (isTRUE(probe_curvature)) {
+          cell3 <- base3$dev[[key]]
+          if (!is.null(cell3) && base3$converged && base1$converged) {
+            dev_3x <- cell3$deviation
+            # curvature_ratio ~ 1 when the response is linear in shock size.
+            denom <- 3 * dev
+            if (is.finite(denom) && abs(denom) > 1e-12) {
+              curvature_ratio <- dev_3x / denom
+              linearity_ok    <- abs(curvature_ratio - 1) < 0.25
+            }
+          }
+        }
+
         rows[[length(rows) + 1L]] <- tibble::tibble(
-          equation       = eq,
-          units          = units,
-          typical_af_sd  = af_sd,
-          shock_value    = shock_val,
-          shock_quarters = shock_quarters,
-          target         = tgt,
-          offset_q       = measure_offsets[j],
-          deviation      = dev,
-          deviation_pct  = dev_pct
+          equation        = eq,
+          units           = units,
+          typical_af_sd   = af_sd,
+          shock_value     = shock_val,
+          shock_quarters  = shock_quarters,
+          target          = tgt,
+          offset_q        = measure_offsets[j],
+          deviation       = dev,
+          deviation_pct   = dev_pct,
+          converged       = base1$converged,
+          deviation_3x    = dev_3x,
+          curvature_ratio = curvature_ratio,
+          linearity_ok    = linearity_ok
         )
       }
     }
@@ -200,6 +220,82 @@ sensitivity_matrix <- function(database,
   attr(out, "measure_offsets")   <- measure_offsets
   attr(out, "baseline_scenario") <- unique(baseline$scenario)[1]
   out
+}
+
+# Solve the model once for a single equation's sustained shock of `shock_val`
+# and return its per-(target, offset) deviations plus a convergence flag.
+#
+# Returns list(converged = logical, dev = named list keyed "TARGET@OFFSET",
+# each element list(deviation, deviation_pct)). When the solve leaves any
+# NaN/Inf in the measured targets, `converged` is FALSE and the caller blanks
+# the deviation rather than emitting a meaningless number. The model is reused
+# (loaded + ESTIMATEd once by the caller); only the injected shock changes.
+run_sensitivity_shock <- function(model, eq, shock_val, shock_qs,
+                                  shock_quarters, horizon, tsrange,
+                                  replay_afs, baseline_lookup, targets,
+                                  measure_offsets, measure_qs) {
+  # Construct the shock as a real adjustment_list with decay_50 tail, then
+  # expand it through the full horizon. This matches how user-supplied AFs
+  # are handled in solve_martin() (decay applies past the explicit horizon,
+  # so propagation at h+8/h+16 reflects real SIBYL conventions).
+  shock <- judgement::adjustment_list(
+    judgement::adjustment(
+      equation        = eq,
+      horizon         = shock_qs,
+      value           = rep(shock_val, shock_quarters),
+      rationale       = "sensitivity probe",
+      channel         = NA_character_,
+      expected_effect = NA_character_,
+      confidence      = "medium",
+      tail            = "decay_50",
+      owner           = "sensitivity_matrix",
+      round_id        = NA_character_,
+      source          = "human"
+    )
+  )
+  user_expanded <- judgement::expand_adjustments(shock, horizon)
+  afs <- inject_user_adjustments(replay_afs, user_expanded)
+
+  sim_model <- .suppress_bimets_version_warning({
+    suppressWarnings(suppressMessages(bimets::SIMULATE(
+      model,
+      TSRANGE            = tsrange,
+      ConstantAdjustment = afs,
+      simConvergence     = 1e-6,
+      simIterLimit       = 100,
+      quietly            = TRUE
+    )))
+  })
+
+  # Convergence over the measured targets only: a soft iteration-limit
+  # warning can leave NaN/Inf in $simulation that bimets passes through.
+  conv <- simulation_convergence(sim_model, tsrange)
+  converged <- isTRUE(conv$converged)
+
+  dev <- list()
+  sim <- sim_model$simulation
+  for (tgt in targets) {
+    tgt_ts <- sim[[tgt]]
+    if (is.null(tgt_ts)) next
+    tgt_t      <- as.numeric(stats::time(tgt_ts))
+    tgt_year   <- floor(tgt_t + 1e-9)
+    tgt_q      <- round((tgt_t - tgt_year) * 4 + 1)
+    tgt_labels <- sprintf("%04dQ%d", tgt_year, tgt_q)
+    tgt_vec    <- setNames(as.numeric(tgt_ts), tgt_labels)
+    base_vec   <- baseline_lookup[[tgt]]
+    if (is.null(base_vec)) next
+
+    for (j in seq_along(measure_offsets)) {
+      q <- measure_qs[j]
+      if (is.na(q) || !q %in% names(tgt_vec) || !q %in% names(base_vec)) next
+      d         <- unname(tgt_vec[q]) - unname(base_vec[q])
+      base_at_q <- unname(base_vec[q])
+      d_pct <- if (abs(base_at_q) > 1e-9) 100 * d / abs(base_at_q) else NA_real_
+      key <- paste(tgt, measure_offsets[j], sep = "@")
+      dev[[key]] <- list(deviation = d, deviation_pct = d_pct)
+    }
+  }
+  list(converged = converged, dev = dev)
 }
 
 # Per-unit-type calibration shock. Chosen to be (a) economically meaningful,

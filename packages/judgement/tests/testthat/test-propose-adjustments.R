@@ -17,6 +17,23 @@ fake_chat <- function(structured_response) {
   )
 }
 
+# Drive review_and_approve()'s interactive gate without a human: mock base
+# readline() so the call returns immediately. `on_prompt` (optional) runs at
+# the moment the human would be editing files, letting a test splice in an
+# edit to the review CSV or exogenize sidecar before the re-read.
+with_mocked_readline <- function(expr, on_prompt = NULL) {
+  expr <- substitute(expr)
+  env <- parent.frame()
+  testthat::with_mocked_bindings(
+    eval(expr, env),
+    readline = function(prompt = "") {
+      if (!is.null(on_prompt)) on_prompt()
+      ""
+    },
+    .package = "base"
+  )
+}
+
 baseline_fixture <- function() {
   tibble::tibble(
     variable = rep(c("Y", "LUR", "PTM"), each = 4),
@@ -35,12 +52,13 @@ test_that("propose_adjustments() parses a structured response", {
         equation        = "PTM",
         horizon_start   = "2026Q1",
         horizon_end     = "2026Q3",
-        values          = c(0.10, 0.08, 0.05),
+        # PTM is units=log_diff (ceiling 0.02/quarter); use realistic values.
+        values          = c(0.001, 0.0008, 0.0005),
         rationale       = "Sustained services-price pressure from migration",
         channel         = "PTM -> P -> PC",
         expected_effect = "+0.15pp headline CPI by 2026Q4",
         confidence      = "medium",
-        tail            = "decay_50"
+        tail            = "carry"
       ),
       list(
         equation        = "NCR",
@@ -103,7 +121,8 @@ test_that("propose_adjustments() warns + recovers on values length mismatch", {
       equation        = "PTM",
       horizon_start   = "2026Q1",
       horizon_end     = "2026Q3",
-      values          = c(0.10, 0.05),  # only 2, horizon is 3
+      # PTM is units=log_diff; keep within the 0.02 ceiling.
+      values          = c(0.001, 0.0005),  # only 2, horizon is 3
       rationale       = "test",
       channel         = NA,
       expected_effect = NA,
@@ -119,7 +138,8 @@ test_that("propose_adjustments() warns + recovers on values length mismatch", {
     "PTM.*2 values for 3-quarter horizon"
   )
   expect_length(al, 1L)
-  expect_equal(al[[1]]$value, c(0.10, 0.05, 0.05))  # padded with last
+  expect_equal(al[[1]]$value, c(0.001, 0.0005, 0.0005))  # padded with last
+  expect_true(al[[1]]$coerced)  # silent miscount is now flagged
 })
 
 test_that("propose_adjustments() rejects non-adjustable equations", {
@@ -149,9 +169,11 @@ test_that("propose_adjustments() rejects non-adjustable equations", {
 
 test_that("review_and_approve() bypasses the gate in non-interactive mode", {
   skip_if_not_installed("martin")
+  # PTM is a log_diff equation; keep the value under the 0.02 per-quarter
+  # ceiling enforced by validate_adjustment_bounds() at construction.
   a <- adjustment(
     equation = "PTM", horizon = c("2026Q1", "2026Q2"),
-    value = c(0.1, 0.05), rationale = "test", tail = "zero",
+    value = c(0.01, 0.005), rationale = "test", tail = "zero",
     confidence = "medium", source = "llm"
   )
   al <- adjustment_list(a)
@@ -166,6 +188,97 @@ test_that("review_and_approve() bypasses the gate in non-interactive mode", {
 test_that("review_and_approve() returns empty list when given empty list", {
   out <- review_and_approve(adjustment_list(), interactive = TRUE)
   expect_length(out, 0L)
+})
+
+test_that("review_and_approve() persists + reattaches the exogenize list", {
+  skip_if_not_installed("martin")
+  a <- adjustment(
+    equation = "PTM", horizon = c("2026Q1", "2026Q2"),
+    value = c(0.001, 0.001), rationale = "sticky services inflation",
+    tail = "carry", confidence = "medium", source = "llm"
+  )
+  proposed <- adjustment_list(a)
+  attr(proposed, "exogenize") <- c("NCR", "PI_E")
+
+  csv_path <- tempfile("sibyl-review-", fileext = ".csv")
+  # Drive the interactive gate non-interactively by stubbing readline(); the
+  # human "accepts" without editing.
+  approved <- with_mocked_readline(
+    review_and_approve(proposed, interactive = TRUE, csv_path = csv_path)
+  )
+  # Sidecar exists and carries the exogenize variables.
+  expect_true(file.exists(paste0(csv_path, ".exogenize")))
+  expect_setequal(
+    readLines(paste0(csv_path, ".exogenize")), c("NCR", "PI_E")
+  )
+  # The approved list carries the SAME exogenize attribute as the proposal.
+  expect_setequal(attr(approved, "exogenize"), attr(proposed, "exogenize"))
+})
+
+test_that("review_and_approve() honours a human-edited exogenize sidecar", {
+  skip_if_not_installed("martin")
+  a <- adjustment(
+    equation = "PTM", horizon = c("2026Q1", "2026Q2"),
+    value = c(0.001, 0.001), rationale = "sticky services inflation",
+    tail = "carry", confidence = "medium", source = "llm"
+  )
+  proposed <- adjustment_list(a)
+  attr(proposed, "exogenize") <- c("NCR")
+
+  csv_path <- tempfile("sibyl-review-", fileext = ".csv")
+  exo_path <- paste0(csv_path, ".exogenize")
+  # The "human" edits the sidecar between write and re-read: drops NCR, adds
+  # PI_E. We splice that edit in by overriding readline to rewrite the file.
+  approved <- with_mocked_readline(
+    review_and_approve(proposed, interactive = TRUE, csv_path = csv_path),
+    on_prompt = function() writeLines("PI_E", exo_path)
+  )
+  expect_setequal(attr(approved, "exogenize"), "PI_E")
+})
+
+test_that("reconstruct_adjustments() survives equation+rationale collisions", {
+  skip_if_not_installed("martin")
+  # Two distinct adjustments, SAME equation AND rationale, DISJOINT horizons.
+  # Grouping on (equation, rationale) would merge them and lose values;
+  # grouping on the stable adjustment_id must keep both intact.
+  a1 <- adjustment(
+    equation = "NCR", horizon = c("2026Q1", "2026Q2"),
+    value = c(0.25, 0.25), rationale = "same rationale",
+    tail = "carry", confidence = "medium", source = "llm"
+  )
+  a2 <- adjustment(
+    equation = "NCR", horizon = c("2027Q1", "2027Q2"),
+    value = c(0.50, 0.50), rationale = "same rationale",
+    tail = "carry", confidence = "high", source = "llm"
+  )
+  proposed <- adjustment_list(a1, a2)
+
+  tbl <- as_tibble_adjustments(proposed)
+  tbl <- judgement:::add_adjustment_ids(tbl, proposed)
+  # Two distinct ids despite identical (equation, rationale).
+  expect_length(unique(tbl$adjustment_id), 2L)
+
+  rebuilt <- judgement:::reconstruct_adjustments(tbl, original = proposed)
+  expect_length(rebuilt, 2L)
+  # Order preserved; both horizons + values intact.
+  expect_equal(rebuilt[[1]]$horizon, c("2026Q1", "2026Q2"))
+  expect_equal(rebuilt[[1]]$value, c(0.25, 0.25))
+  expect_equal(rebuilt[[2]]$horizon, c("2027Q1", "2027Q2"))
+  expect_equal(rebuilt[[2]]$value, c(0.50, 0.50))
+})
+
+test_that("reconstruct_adjustments() falls back to legacy key without ids", {
+  skip_if_not_installed("martin")
+  a <- adjustment(
+    equation = "NCR", horizon = c("2026Q1", "2026Q2"),
+    value = c(0.25, 0.25), rationale = "legacy",
+    tail = "carry", confidence = "medium", source = "llm"
+  )
+  proposed <- adjustment_list(a)
+  tbl <- as_tibble_adjustments(proposed)  # no adjustment_id column
+  rebuilt <- judgement:::reconstruct_adjustments(tbl, original = proposed)
+  expect_length(rebuilt, 1L)
+  expect_equal(rebuilt[[1]]$value, c(0.25, 0.25))
 })
 
 # ----- refine_adjustments() and propose_with_refinement() -----------------

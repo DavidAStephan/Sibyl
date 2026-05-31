@@ -39,7 +39,15 @@ documented in detail at [docs/llm_layer.md](docs/llm_layer.md).
 2. **Add-factors are first-class objects with metadata**, not bare numbers.
    The `adjustment` S3 class in [packages/judgement/R/adjustment.R](packages/judgement/R/adjustment.R)
    carries `{equation, horizon, value, rationale, channel, expected_effect,
-   confidence, owner, round_id}` plus tail behaviour (carry / decay / zero).
+   confidence, target_variable, expected_direction, owner, round_id}` plus
+   tail behaviour (carry / decay_50 / zero). The default tail is **`carry`**
+   (hold the last value forward). `decay_50` reproduces the EViews
+   `_a(-1) * -0.5` rule, which governs *historical residual* handover into the
+   forecast — not a deliberate forecaster shock — and oscillates sign quarter
+   to quarter, so it is no longer the default. Add-factor magnitudes and
+   horizon length are guardrailed against per-unit ceilings in
+   `validate_adjustment_bounds()` (override via `options(sibyl.af_ceiling=)` /
+   `options(sibyl.af_horizon_ceiling=)`).
 3. **Round-trip consistency check.** After the human accepts adjustments and
    MARTIN solves, the LLM reads the solved projection and describes it. If the
    description doesn't match the input narrative, we've caught a translation
@@ -47,6 +55,18 @@ documented in detail at [docs/llm_layer.md](docs/llm_layer.md).
 4. **Human-in-the-loop is structural.** Any path from narrative → solved
    forecast must pass through an explicit approval step where proposed
    add-factors are shown as a table with rationales before MARTIN sees them.
+   `judgement::review_and_approve()` now defaults `interactive =
+   base::interactive()`, so the gate is **ON by default** in any interactive
+   session: it writes the proposal CSV, surfaces the `exogenize` list (held at
+   baseline) via a sidecar, and blocks for human edits. The exogenize list now
+   round-trips through the gate (persisted to `paste0(csv_path, ".exogenize")`
+   and re-attached to the approved list). Unattended `_targets.R` runs no
+   longer bypass silently: the pipeline **stops** on un-reviewed proposals
+   unless an explicit approval token is set (`SIBYL_APPROVE=1` or the
+   `approve_token` target). A second, LLM-independent fidelity gate
+   `judgement::mechanical_audit()` deterministically checks each adjustment's
+   declared `target_variable`/`expected_direction` against the realised
+   projection-minus-baseline diff.
 5. **Targets-based orchestration from day one.** Use `targets` even though it
    feels heavy.
 6. **Reproducibility against the reference repos.** `martin` ships a frozen
@@ -85,8 +105,23 @@ documented in detail at [docs/llm_layer.md](docs/llm_layer.md).
 - **[packages/martin/](packages/martin/)** — SIBYL's own MARTIN wrapper. The
   bimets `.txt` files are vendored (copied with attribution) into
   [packages/martin/inst/extdata/](packages/martin/inst/extdata/). The default
-  is `MARTINMOD_AF.txt` with **frozen coefficients** for v0; re-estimation
-  via `MARTINMOD_EST.txt` is a future flag.
+  model file is `MARTINMOD_AF.txt`.
+
+  **What "frozen" actually means.** `MARTINMOD_AF.txt` is *not* a set of
+  hardcoded identities and it does *not* load published EViews values as-is.
+  It defines **95 `BEHAVIORAL>` equations**. Only **~51** carry
+  `RESTRICT> c1=1`; the remaining behaviorals impose *real* cross-coefficient
+  restrictions (e.g. `c4+c5+c6+c7=1`, `c4=0.5`) and leave free coefficients to
+  be fit. `bimets::ESTIMATE` therefore **re-fits the free coefficients on
+  every `load_martin()`**. "Frozen" in SIBYL means only that we keep the model
+  file's embedded **2019Q3 estimation `TSRANGE`** (the published sample), so
+  the re-fit reproduces the published coefficients — it does not mean "no
+  estimation happens". Passing `coefficients = "reestimated"` with an
+  `estimation_end` rewrites that `TSRANGE` and re-fits across a later (e.g.
+  post-COVID) sample; that is the explicit opt-in described in the design
+  principles. The pipeline default is **frozen** (`estimation_end = NULL`).
+  `MARTINMOD_EST.txt` (true behavioural form for full re-estimation) is a
+  future flag.
 
 ## Conventions
 
@@ -110,7 +145,12 @@ documented in detail at [docs/llm_layer.md](docs/llm_layer.md).
 
 ## What you do NOT do without asking
 
-- Re-estimate MARTIN coefficients (default is the published EViews values).
+- Re-estimate MARTIN coefficients across a non-published sample. The default
+  is **frozen** (`estimation_end = NULL`): `bimets::ESTIMATE` re-fits the free
+  coefficients but on the model file's embedded 2019Q3 `TSRANGE`, reproducing
+  the published values. Re-estimating over a later sample (e.g. `"2025Q2"`,
+  across the COVID break) is an explicit opt-in via `coefficients =
+  "reestimated"`, not the default.
 - Add an opinion to the LLM's output beyond what the input narrative says.
 - Skip the human-approval step on add-factors.
 - Commit `.Renviron`, API keys, or `.wf1` files.

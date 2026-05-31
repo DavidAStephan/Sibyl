@@ -6,9 +6,18 @@
 # the model consumes, and the round-report prose. It carries enough metadata
 # to flow through that whole pipeline.
 #
-# Tail behaviour codifies the EViews `_a = _a(-1) * -0.5` convention from
-# references/MARTIN-master/Programs/solve_model.prg: decay_50 reproduces it,
-# carry holds the last value forward, zero truncates.
+# Tail behaviour governs how a deliberate judgement shock is extended past its
+# explicit horizon: carry (the default) holds the last value forward, zero
+# truncates, and decay_50 applies geometric decay with a sign flip.
+#
+# NOTE on decay_50: the EViews `_a = _a(-1) * -0.5` rule in
+# references/MARTIN-master/Programs/solve_model.prg governs the handover of
+# *historical residuals* into the forecast period -- it damps the model's own
+# last-observed errors, not a forecaster's deliberate shock. As a tail for a
+# sustained judgement shock it oscillates sign every quarter, which is almost
+# never what a narrative intends. We therefore default to `carry` and keep
+# decay_50 available only for the rare case where the historical-residual
+# semantics are genuinely wanted.
 
 #' Construct an adjustment
 #'
@@ -30,9 +39,23 @@
 #' @param expected_effect Character. Plain-English description of what the
 #'   adjustment should do (e.g. `"+0.2pp CPI by 2027Q4"`).
 #' @param confidence One of `"high"`, `"medium"`, `"low"`.
-#' @param tail One of `"decay_50"` (default — matches the EViews
-#'   `_a(-1) * -0.5` convention from `solve_model.prg`), `"carry"` (hold last
-#'   value forward), or `"zero"` (truncate to zero beyond horizon).
+#' @param tail One of `"carry"` (default — hold the last value forward),
+#'   `"zero"` (truncate to zero beyond horizon), or `"decay_50"` (geometric
+#'   decay with a sign flip). `decay_50` reproduces the EViews
+#'   `_a(-1) * -0.5` rule, which governs *historical residual* handover, not
+#'   deliberate shocks; as a sustained-shock tail it oscillates sign, so
+#'   `carry` is the sane default. See the note at the top of this file.
+#' @param target_variable Character. The MARTIN variable the adjustment is
+#'   primarily expected to move (e.g. `"P"` for a PTM adjustment). Optional;
+#'   defaults to `NA`. Used by [mechanical_audit()] for the LLM-independent
+#'   fidelity check.
+#' @param expected_direction One of `"up"`, `"down"`, `"none"`, or `NA`
+#'   (default). The direction `target_variable` is expected to move relative
+#'   to baseline. Used by [mechanical_audit()].
+#' @param coerced Logical. `TRUE` if the adjustment's `value` length was
+#'   silently padded/truncated to match `horizon` during parsing (see
+#'   [parse_proposal_to_adjustment()]). Defaults to `FALSE`. Surfaced so a
+#'   silent miscount stays visible downstream.
 #' @param owner    Character. Who proposed this adjustment.
 #' @param round_id Character. The round this adjustment belongs to.
 #' @param source   One of `"human"` or `"llm"`.
@@ -51,7 +74,10 @@ adjustment <- function(equation,
                        channel        = NA_character_,
                        expected_effect = NA_character_,
                        confidence     = c("medium", "high", "low"),
-                       tail           = c("decay_50", "carry", "zero"),
+                       tail           = c("carry", "zero", "decay_50"),
+                       target_variable   = NA_character_,
+                       expected_direction = NA_character_,
+                       coerced        = FALSE,
                        owner          = NA_character_,
                        round_id       = NA_character_,
                        source         = c("human", "llm", "llm-refined")) {
@@ -60,17 +86,20 @@ adjustment <- function(equation,
   source     <- match.arg(source)
 
   obj <- list(
-    equation        = equation,
-    horizon         = horizon,
-    value           = value,
-    rationale       = rationale,
-    channel         = channel,
-    expected_effect = expected_effect,
-    confidence      = confidence,
-    tail            = tail,
-    owner           = owner,
-    round_id        = round_id,
-    source          = source
+    equation           = equation,
+    horizon            = horizon,
+    value              = value,
+    rationale          = rationale,
+    channel            = channel,
+    expected_effect    = expected_effect,
+    confidence         = confidence,
+    tail               = tail,
+    target_variable    = target_variable,
+    expected_direction = expected_direction,
+    coerced            = isTRUE(coerced),
+    owner              = owner,
+    round_id           = round_id,
+    source             = source
   )
   class(obj) <- c("adjustment", "list")
   validate_adjustment(obj)
@@ -95,7 +124,8 @@ validate_adjustment <- function(x) {
 
   required <- c("equation", "horizon", "value", "rationale",
                 "channel", "expected_effect", "confidence",
-                "tail", "owner", "round_id", "source")
+                "tail", "target_variable", "expected_direction",
+                "coerced", "owner", "round_id", "source")
   missing <- setdiff(required, names(x))
   if (length(missing)) {
     stop("adjustment is missing fields: ",
@@ -136,12 +166,37 @@ validate_adjustment <- function(x) {
   if (!x$confidence %in% c("high", "medium", "low")) {
     stop("`confidence` must be one of high, medium, low.", call. = FALSE)
   }
-  if (!x$tail %in% c("decay_50", "carry", "zero")) {
-    stop("`tail` must be one of decay_50, carry, zero.", call. = FALSE)
+  if (!x$tail %in% c("carry", "zero", "decay_50")) {
+    stop("`tail` must be one of carry, zero, decay_50.", call. = FALSE)
+  }
+  if (!is.character(x$target_variable) || length(x$target_variable) != 1L) {
+    stop("`target_variable` must be a single string (or NA_character_).",
+         call. = FALSE)
+  }
+  if (!is.character(x$expected_direction) ||
+      length(x$expected_direction) != 1L) {
+    stop("`expected_direction` must be a single string (or NA_character_).",
+         call. = FALSE)
+  }
+  if (!is.na(x$expected_direction) &&
+      !x$expected_direction %in% c("up", "down", "none")) {
+    stop("`expected_direction` must be one of up, down, none (or NA).",
+         call. = FALSE)
+  }
+  if (length(x$coerced) != 1L || !is.logical(x$coerced) || is.na(x$coerced)) {
+    stop("`coerced` must be a single non-NA logical.", call. = FALSE)
   }
   if (!x$source %in% c("human", "llm", "llm-refined")) {
     stop("`source` must be one of human, llm, llm-refined.", call. = FALSE)
   }
+
+  # Magnitude / horizon guardrails. A naive add-factor of 0.1 on a log_diff
+  # equation is +10pp/quarter, which compounds catastrophically; an absurdly
+  # long horizon is almost always a miscount. These ceilings are GENEROUS
+  # (they still admit any plausible deliberate shock) but catch catastrophe.
+  # They are NOT keyed to typical_af_sd, which is documented-unreliable
+  # (e.g. 0.1 on a log_diff equation would itself be catastrophic).
+  validate_adjustment_bounds(x)
 
   # Cross-check against the catalogue if available. Soft check: if martin
   # isn't loadable (judgement tested standalone), skip silently.
@@ -162,6 +217,90 @@ validate_adjustment <- function(x) {
   invisible(x)
 }
 
+# Default per-unit, per-quarter magnitude ceilings for add-factor values.
+# Derived from the equation's UNITS, not from typical_af_sd (which is
+# documented-unreliable). Generous enough to admit any plausible deliberate
+# shock, tight enough to catch catastrophe (a naive 0.1 on log_diff is
+# +10pp/quarter and compounds explosively). Overridable via
+# getOption("sibyl.af_ceiling") or the `ceilings` arg to
+# validate_adjustment_bounds().
+.default_af_ceilings <- function() {
+  list(
+    log_diff = 0.02,   # <= 0.02 quarterly log change ~ +8pp annualised
+    level    = 1.0,    # <= 1.0 unit per quarter on the LHS difference
+    percent  = 5.0,    # <= 5.0 percentage points per quarter
+    unknown  = 5.0     # fall back to the loosest ceiling when units unknown
+  )
+}
+
+# Hard ceiling on horizon length (in quarters). A horizon longer than this is
+# almost always an LLM miscount rather than a deliberate decade-plus shock.
+.default_horizon_ceiling <- 60L
+
+#' Validate an adjustment's magnitude and horizon length against ceilings
+#'
+#' Rejects (with an error) any add-factor whose `|value|` exceeds a generous
+#' per-unit, per-quarter ceiling, or whose horizon is implausibly long. The
+#' per-unit ceiling is keyed to the equation's `units` column in
+#' [martin::equation_catalogue()] (try-guarded; if `martin` is unavailable the
+#' magnitude check soft-skips and only the horizon-length check runs).
+#'
+#' Override the ceilings for an intentional extreme shock either by setting
+#' `options(sibyl.af_ceiling = list(log_diff = ..., level = ..., percent = ...))`
+#' or by passing `ceilings`/`horizon_ceiling` directly.
+#'
+#' @param x An `adjustment` object.
+#' @param ceilings Named list of per-unit ceilings (`log_diff`, `level`,
+#'   `percent`). Defaults to `getOption("sibyl.af_ceiling")` then the package
+#'   defaults.
+#' @param horizon_ceiling Integer. Maximum allowed horizon length in quarters.
+#'   Defaults to `getOption("sibyl.af_horizon_ceiling")` then 60.
+#' @return `x` invisibly. Throws on failure.
+#' @keywords internal
+validate_adjustment_bounds <- function(x,
+                                       ceilings        = NULL,
+                                       horizon_ceiling = NULL) {
+  # Horizon-length ceiling first (no martin dependency).
+  horizon_ceiling <- horizon_ceiling %||%
+    getOption("sibyl.af_horizon_ceiling", .default_horizon_ceiling)
+  if (length(x$horizon) > horizon_ceiling) {
+    stop(sprintf(
+      paste("Adjustment on `%s` has a %d-quarter horizon, exceeding the",
+            "ceiling of %d. This is almost always a horizon miscount; set",
+            "options(sibyl.af_horizon_ceiling=) to override deliberately."),
+      x$equation, length(x$horizon), horizon_ceiling), call. = FALSE)
+  }
+
+  ceilings <- ceilings %||% getOption("sibyl.af_ceiling") %||%
+    .default_af_ceilings()
+
+  # Resolve the equation's units from the catalogue (soft-skip if martin
+  # isn't loadable, so judgement can still be tested standalone).
+  units <- NA_character_
+  cat <- try(martin::equation_catalogue(), silent = TRUE)
+  if (!inherits(cat, "try-error")) {
+    row <- cat[cat$code == x$equation, , drop = FALSE]
+    if (nrow(row) == 1L && "units" %in% names(row)) {
+      units <- as.character(row$units)
+    }
+  }
+  if (is.na(units)) units <- "unknown"
+
+  ceiling <- ceilings[[units]] %||% ceilings[["unknown"]] %||%
+    .default_af_ceilings()[["unknown"]]
+  worst <- suppressWarnings(max(abs(x$value)))
+  if (is.finite(ceiling) && is.finite(worst) && worst > ceiling) {
+    stop(sprintf(
+      paste("Adjustment on `%s` (units=%s) has |value|=%g, exceeding the",
+            "per-quarter ceiling of %g. A value this large on a %s residual",
+            "compounds far beyond any plausible narrative. Override with",
+            "options(sibyl.af_ceiling=) if this extreme shock is intended."),
+      x$equation, units, worst, ceiling, units), call. = FALSE)
+  }
+
+  invisible(x)
+}
+
 #' Test whether an object is an adjustment
 #'
 #' @param x Any object.
@@ -176,13 +315,18 @@ format.adjustment <- function(x, ...) {
     "<adjustment {x$equation}> ",
     "{length(x$horizon)} quarter(s), ",
     "{x$horizon[1]}..{x$horizon[length(x$horizon)]} ",
-    "[tail={x$tail}, conf={x$confidence}, src={x$source}]"
+    "[tail={x$tail}, conf={x$confidence}, src={x$source}",
+    "{if (isTRUE(x$coerced)) ', coerced' else ''}]"
   )
   body <- c(
     glue::glue("  value:     {paste(format(x$value, nsmall = 2), collapse = ', ')}"),
     glue::glue("  rationale: {x$rationale}"),
     if (!is.na(x$channel))         glue::glue("  channel:   {x$channel}"),
     if (!is.na(x$expected_effect)) glue::glue("  expected:  {x$expected_effect}"),
+    if (!is.na(x$target_variable)) {
+      dir <- if (is.na(x$expected_direction)) "NA" else x$expected_direction
+      glue::glue("  target:    {x$target_variable} ({dir})")
+    },
     if (!is.na(x$owner))           glue::glue("  owner:     {x$owner}"),
     if (!is.na(x$round_id))        glue::glue("  round:     {x$round_id}")
   )
@@ -247,23 +391,28 @@ as_tibble_adjustments <- function(x) {
       equation = character(), quarter = character(), value = numeric(),
       rationale = character(), channel = character(),
       expected_effect = character(), confidence = character(),
-      tail = character(), owner = character(), round_id = character(),
+      tail = character(), target_variable = character(),
+      expected_direction = character(), coerced = logical(),
+      owner = character(), round_id = character(),
       source = character()
     ))
   }
   rows <- purrr::map_dfr(x, function(a) {
     tibble::tibble(
-      equation        = a$equation,
-      quarter         = a$horizon,
-      value           = a$value,
-      rationale       = a$rationale,
-      channel         = a$channel,
-      expected_effect = a$expected_effect,
-      confidence      = a$confidence,
-      tail            = a$tail,
-      owner           = a$owner,
-      round_id        = a$round_id,
-      source          = a$source
+      equation           = a$equation,
+      quarter            = a$horizon,
+      value              = a$value,
+      rationale          = a$rationale,
+      channel            = a$channel,
+      expected_effect    = a$expected_effect,
+      confidence         = a$confidence,
+      tail               = a$tail,
+      target_variable    = a$target_variable,
+      expected_direction = a$expected_direction,
+      coerced            = isTRUE(a$coerced),
+      owner              = a$owner,
+      round_id           = a$round_id,
+      source             = a$source
     )
   })
   rows
@@ -282,11 +431,14 @@ as_tibble_adjustments <- function(x) {
 #' - Cells before the first horizon quarter are zero.
 #' - Cells after the last horizon quarter are filled per the adjustment's
 #'   `tail` rule:
+#'     - `"carry"`    — hold the last horizon value forward (the default).
 #'     - `"zero"`     — zero.
-#'     - `"carry"`    — hold the last horizon value forward.
-#'     - `"decay_50"` — geometric decay with sign flip, matching the EViews
-#'                      `_a = _a(-1) * -0.5` convention from
+#'     - `"decay_50"` — geometric decay with sign flip, reproducing the EViews
+#'                      `_a = _a(-1) * -0.5` rule from
 #'                      `references/MARTIN-master/Programs/solve_model.prg`.
+#'                      That rule governs handover of *historical residuals*,
+#'                      not deliberate shocks; as a sustained-shock tail it
+#'                      oscillates sign, so prefer `carry`.
 #'
 #' Multiple adjustments targeting the same equation are summed element-wise.
 #'

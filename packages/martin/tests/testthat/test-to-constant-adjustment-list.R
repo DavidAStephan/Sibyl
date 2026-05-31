@@ -2,10 +2,12 @@
 # produces correctly-shaped bimets TIMESERIES objects.
 
 mk <- function(...) {
+  # PTM is a log_diff equation; defaults stay under the 0.02 per-quarter
+  # ceiling enforced by judgement::validate_adjustment_bounds().
   defaults <- list(
     equation        = "PTM",
     horizon         = c("2026Q1", "2026Q2"),
-    value           = c(0.10, 0.05),
+    value           = c(0.01, 0.005),
     rationale       = "test fixture",
     tail            = "zero",
     confidence      = "medium",
@@ -37,7 +39,7 @@ test_that("to_constant_adjustment_list() wraps values in bimets TIMESERIES", {
   # 8 quarters: 2026Q1..2027Q4 inclusive
   expect_length(as.numeric(out$PTM), 8L)
   # First two cells are the explicit horizon values; rest are zero (zero tail)
-  expect_equal(as.numeric(out$PTM), c(0.10, 0.05, 0, 0, 0, 0, 0, 0))
+  expect_equal(as.numeric(out$PTM), c(0.01, 0.005, 0, 0, 0, 0, 0, 0))
 })
 
 test_that("to_constant_adjustment_list() carries multiple equations through", {
@@ -45,7 +47,7 @@ test_that("to_constant_adjustment_list() carries multiple equations through", {
 
   al <- judgement::adjustment_list(
     mk(equation = "PTM",
-       horizon = c("2026Q1", "2026Q2"), value = c(0.1, 0.05)),
+       horizon = c("2026Q1", "2026Q2"), value = c(0.01, 0.005)),
     mk(equation = "NCR",
        horizon = c("2026Q1"), value = 0.25,
        rationale = "Pre-emptive hike")
@@ -54,5 +56,5 @@ test_that("to_constant_adjustment_list() carries multiple equations through", {
 
   expect_setequal(names(out), c("PTM", "NCR"))
   expect_equal(as.numeric(out$NCR), c(0.25, 0, 0, 0))
-  expect_equal(as.numeric(out$PTM), c(0.10, 0.05, 0, 0))
+  expect_equal(as.numeric(out$PTM), c(0.01, 0.005, 0, 0))
 })

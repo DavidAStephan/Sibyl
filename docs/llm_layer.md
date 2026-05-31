@@ -127,6 +127,20 @@ The whole matrix is ~3.4k tokens; entries with no signal (|deviation
 %| < 0.05% at all offsets) are filtered out for compactness. Renderer
 is `judgement::format_sensitivity_text()`.
 
+**Linearity probe (don't scale a non-linear deviation).** The propose
+prompt tells the LLM that linear scaling of these deviations is
+*approximately* valid — but MARTIN is non-linear, and a 4-quarter probe
+should not be used to calibrate a 12-20-quarter shock without checking.
+`sensitivity_matrix(..., probe_curvature = TRUE)` (the default) therefore
+also solves each equation at **3x** the standardised shock and emits three
+extra columns: `deviation_3x`, `curvature_ratio` (`= deviation_3x /
+(3 * deviation)`, ~1 if linear) and `linearity_ok` (`abs(curvature_ratio -
+1) < 0.25`). It also emits a per-equation `converged` flag from the 1x
+solve; a non-converged or non-finite probe sets `deviation`/`deviation_3x`
+to `NA` so the LLM is never handed garbage. `format_sensitivity_text()`
+consumes these columns, and the prompt builder stops inviting linear
+scaling on rows where `linearity_ok` is FALSE.
+
 **Why this matters.** Before the sensitivity matrix landed, the LLM
 was guessing magnitudes from in-context examples. On the same LUR
 narrative across different runs it would flip between LUR (right
@@ -217,7 +231,7 @@ list(
       channel         = "LUR -> NCR -> Y; PTM via Phillips curve",
       expected_effect = "-1.5pp LUR by 2025Q4",
       confidence      = "medium",
-      tail            = "decay_50"
+      tail            = "carry"
     ),
     ...
   )
@@ -227,6 +241,20 @@ list(
 Schema source: `proposal_schema()` in `llm_helpers.R`. The LLM
 literally cannot return free-form text here — structured output is
 how SIBYL avoids parsing hallucinated JSON.
+
+**Tail default.** The `tail` field is now **`"carry"`** by default (hold the
+last horizon value forward), with `"zero"` and `"decay_50"` available.
+`decay_50` reproduces the EViews `_a(-1) * -0.5` rule, but that rule governs
+the handover of *historical residuals* into the forecast, not a deliberate
+sustained shock — used as a sustained-shock tail it flips sign every quarter.
+Older worked examples below were captured before this change and show
+`decay_50`; the current default is `carry`.
+
+**Bounds.** Each proposed value and the horizon length are guardrailed:
+`|value|` must stay under per-unit ceilings (`log_diff <= 0.02`, `level
+<= 1.0`, `percent <= 5.0` per quarter) and the horizon under 60 quarters,
+keyed to the equation's `units`. Override for a deliberate extreme shock via
+`options(sibyl.af_ceiling = ...)` / `options(sibyl.af_horizon_ceiling = ...)`.
 
 ## A worked example: the labour-market gap narrative
 
@@ -358,6 +386,36 @@ curve room to respond. The forecaster can either:
 
 The diagnostic surfaces the choice; it doesn't make it.
 
+### The LLM-independent fidelity gate: `mechanical_audit()`
+
+The narrative audit above is itself an LLM step and can be fooled by prose.
+SIBYL therefore runs a second, fully deterministic check that needs no model
+call: `judgement::mechanical_audit(adjustments, projection, baseline)`. For
+each adjustment that declares a `target_variable` and an `expected_direction`
+(`"up"` / `"down"` / `"none"`), it compares the declared direction against
+the realised horizon-end projection-minus-baseline diff and returns a tibble
+`(equation, target_variable, expected_direction, realised_diff, agrees)`.
+`agrees` is TRUE/FALSE, or NA when there is nothing to check (no declared
+target, or the variable is absent from the projection). Because it is
+computed straight from the numbers, it catches the case where the prose
+audit "agrees" but the model actually moved the target the wrong way. Run it
+alongside `diagnose_audit()`; both feed the round report.
+
+### The human-approval gate and `exogenize` round-trip
+
+Before any of the LLM audit steps, the proposal passes through
+`review_and_approve()`, which is interactive by default (`interactive =
+base::interactive()`). It writes the proposal to a review CSV (with a hidden,
+non-editable `adjustment_id` keying each row back to its adjustment so
+human edits regroup correctly), surfaces the list of variables to
+**exogenise** — hold at the baseline path — and blocks for human edits. The
+exogenize list is persisted to a sidecar (`paste0(csv_path, ".exogenize")`)
+and re-attached to the approved list, so it survives the gate and is not
+silently dropped when a human edits the table. Unattended `_targets.R` runs
+require an explicit approval token (`SIBYL_APPROVE=1` or the `approve_token`
+target), or the pipeline stops on un-reviewed proposals; calling
+`review_and_approve(interactive = FALSE)` directly still bypasses (for tests).
+
 ## When the round-trip is wrong: the refinement loop
 
 If `overall_match != "agree"` and we have iterations left,
@@ -446,7 +504,9 @@ solves.
 |---|---|
 | `propose_adjustments()` | [`packages/judgement/R/propose_adjustments.R`](../packages/judgement/R/propose_adjustments.R) |
 | `refine_adjustments()`, `propose_with_refinement()`, `pick_best_iteration()` | same file |
-| `describe_projection()`, `compare_narrative_to_description()`, `diagnose_audit()` | [`packages/judgement/R/describe_projection.R`](../packages/judgement/R/describe_projection.R) |
+| `describe_projection()`, `compare_narrative_to_description()`, `diagnose_audit()`, `mechanical_audit()` | [`packages/judgement/R/describe_projection.R`](../packages/judgement/R/describe_projection.R) |
+| `review_and_approve()`, `reconstruct_adjustments()` (human gate + exogenize round-trip) | [`packages/judgement/R/propose_adjustments.R`](../packages/judgement/R/propose_adjustments.R) |
+| `solve_martin_stochastic()` (opt-in uncertainty bands) | [`packages/martin/R/solve_martin.R`](../packages/martin/R/solve_martin.R) |
 | `system_prompt_propose()`, `format_sensitivity_text()`, `projection_diff_text()`, schemas | [`packages/judgement/R/llm_helpers.R`](../packages/judgement/R/llm_helpers.R) |
 | `adjustment()` S3 class + validator + `expand_adjustments()` | [`packages/judgement/R/adjustment.R`](../packages/judgement/R/adjustment.R) |
 | `sensitivity_matrix()` (pre-compute) | [`packages/martin/R/sensitivity_matrix.R`](../packages/martin/R/sensitivity_matrix.R) |

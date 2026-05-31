@@ -17,8 +17,14 @@
 #' - [martin_data_fixture()] — the frozen MARTINDATA_XLSX snapshot used by
 #'   regression tests.
 #'
-#' v0 uses the `MARTINMOD_AF.txt` form with frozen EViews coefficients.
-#' Re-estimation via `MARTINMOD_EST.txt` is a future flag.
+#' v0 uses the `MARTINMOD_AF.txt` form. That file holds 95 `BEHAVIORAL>`
+#' equations; only ~51 carry a `RESTRICT> c1=1`, and the rest impose real
+#' cross-coefficient restrictions (e.g. `c4+c5+c6+c7=1`, `c4=0.5`).
+#' `bimets::ESTIMATE()` re-fits the free coefficients on EVERY load — it is
+#' not loading the published EViews values as-is. The default ("frozen")
+#' only means estimating over the model file's embedded 2019Q3 `TSRANGE`
+#' sample; the alternative is re-estimating through a later quarter, which
+#' re-fits across the COVID break (see [solve_martin()]'s `coefficients`).
 #'
 #' @keywords internal
 "_PACKAGE"
