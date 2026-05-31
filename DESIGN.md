@@ -204,8 +204,13 @@ adjustment(
 ```
 
 The `tail` field controls how cells beyond the explicit horizon are filled.
-The default is **`"carry"`** — hold the last value forward, which is what a
-sustained narrative shock almost always means. `"zero"` truncates.
+The default is **`"decay_50"`** — geometric decay of the residual shock.
+Add-factors land on equation residuals, and most MARTIN equations are in
+growth-rate / first-difference form, so a sustained `"carry"` shock makes the
+LEVEL diverge without bound (a live round with `"carry"` on LUR drove modelled
+unemployment negative); `"decay_50"` tapers the shock so a sustained level
+target converges. `"carry"` (hold the last value forward) is correct only for a
+level-residual equation such as the TLUR trend. `"zero"` truncates.
 `"decay_50"` reproduces the EViews `_a = _a(-1) * -0.5` convention from
 [references/MARTIN-master/Programs/solve_model.prg](references/MARTIN-master/Programs/solve_model.prg).
 Note that the EViews rule governs the **handover of historical residuals**

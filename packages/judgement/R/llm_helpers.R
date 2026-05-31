@@ -50,15 +50,16 @@ proposal_item_schema <- function() {
     tail = ellmer::type_enum(
       c("carry", "zero", "decay_50"),
       description = paste(
-        "How beyond-horizon cells should be filled. carry (DEFAULT): hold",
-        "the last value forward -- the right choice for a sustained",
-        "judgement shock or a regime change. zero: truncate to zero -- for",
-        "a one-off announcement. decay_50: geometric decay with a sign",
-        "flip. NOTE decay_50 reproduces the EViews _a(-1)*-0.5 rule, which",
-        "governs handover of HISTORICAL residuals, not deliberate shocks;",
-        "as a sustained-shock tail it oscillates sign every quarter, so use",
-        "it only when you specifically want that historical-residual",
-        "behaviour."
+        "How beyond-horizon cells should be filled. decay_50 (DEFAULT):",
+        "geometric decay of the residual shock. Most MARTIN equations are in",
+        "growth-rate / first-difference form, so a sustained residual shock",
+        "diverges the LEVEL; decay_50 tapers the per-quarter shock so the level",
+        "CONVERGES to a finite deviation -- the right choice for a sustained",
+        "level target like 'X runs Y below baseline from <date> onward'. zero:",
+        "truncate beyond the horizon (level holds at its end-of-horizon value)",
+        "-- for a one-off announcement. carry: hold the last value forward --",
+        "use ONLY for an equation whose residual is on the level itself; on a",
+        "growth-rate / first-difference equation it makes the level diverge."
       )
     ),
     target_variable = ellmer::type_string(
@@ -181,7 +182,7 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "",
     "       Example A — sticky inflation, PTM (units=log_diff)",
     "         Narrative: trimmed-mean inflation ~0.1pp/qtr higher than baseline",
-    "         AF: equation=PTM, values=0.001 repeated for 6 quarters, carry",
+    "         AF: equation=PTM, values=0.001 repeated for 6 quarters, decay_50",
     "         Realised: price level +1.3% by end-horizon, real Y/RC/GNE -0.5%,",
     "                   NCR +1pp via endogenous Taylor Rule. Round-trip: agree.",
     "",
@@ -198,7 +199,7 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "",
     "       Example C — direct cyclical labour gap, LUR (units=level)",
     "         Narrative: post-COVID structural tightening, LUR -1.6pp by 2024Q4",
-    "         AF: equation=LUR, values=-0.08 repeated for 20 quarters, carry",
+    "         AF: equation=LUR, values=-0.08 repeated for 20 quarters, decay_50",
     "         Realised: LUR -1.6pp by 2024Q4 — closes the gap directly. LUR's",
     "                   residual is on TSDELTA(LUR), so -0.08/qtr cumulates to",
     "                   -1.6pp over 20 quarters. Round-trip: agree.",
@@ -218,12 +219,16 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
     "     horizon_start + 1 quarters. Count carefully: 2025Q4 to 2027Q4 is 9",
     "     quarters (Q4 + 4 + 4), not 8 or 32. The parser will warn and",
     "     truncate/pad on mismatch but accurate counts produce better solves.",
-    "  6. Use carry as the DEFAULT tail rule: a judgement shock should hold",
-    "     its last value forward beyond the explicit horizon. Use zero for",
-    "     one-off announcements. Only use decay_50 if you specifically want",
-    "     the EViews historical-residual handover semantics (geometric decay",
-    "     with a sign flip) -- it is NOT appropriate for a sustained shock,",
-    "     where it would oscillate sign every quarter.",
+    "  6. Use decay_50 as the DEFAULT tail rule. Add-factors land on equation",
+    "     RESIDUALS, and most MARTIN equations are in growth-rate / first-",
+    "     difference form, so a sustained residual shock makes the LEVEL",
+    "     diverge without bound. decay_50 tapers the shock past the horizon so",
+    "     the level CONVERGES to the finite deviation the narrative describes",
+    "     (e.g. 'LUR ~1pp below baseline from 2026 onward'). Use zero for a",
+    "     one-off announcement. Use carry ONLY for an equation whose residual",
+    "     is on the level itself (e.g. a trend/NAIRU level like TLUR); using",
+    "     carry on a growth-rate equation will run the level away (a sustained",
+    "     carry on LUR drove modelled unemployment negative).",
     "  7. Prefer fewer, targeted adjustments over many small ones.",
     "  8. If the narrative is silent on quantitative changes, return an empty",
     "     adjustments array.",
@@ -256,7 +261,7 @@ system_prompt_propose <- function(sensitivity_text = NULL) {
         "For each adjustable equation, the table below shows what a",
         "standardized unit shock (e.g. +0.001/quarter on log_diff equations,",
         "+0.05/quarter on level equations, +0.10/quarter on percent",
-        "equations) sustained over 4 quarters with carry actually does to",
+        "equations) sustained over 4 quarters with decay_50 actually does to",
         "the headline aggregates, at offsets h+1, h+4, h+8, h+16 from the",
         "shock start. Use this as a calibration ANCHOR, not an exact",
         "multiplier: MARTIN is nonlinear, so a larger or longer shock will",
@@ -413,7 +418,7 @@ format_sensitivity_text <- function(matrix,
     if (length(lines) == 0L) next
 
     header <- sprintf(
-      "- %s (units=%s, shock=%+g per quarter sustained over %d quarters, carry):",
+      "- %s (units=%s, shock=%+g per quarter sustained over %d quarters, decay_50):",
       eq, units, shock_val, shock_q
     )
     out[[length(out) + 1L]] <- paste(c(header, unlist(lines)), collapse = "\n")

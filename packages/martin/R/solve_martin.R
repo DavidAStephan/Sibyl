@@ -388,6 +388,7 @@ solve_martin_stochastic <- function(database,
                                     estimation_end = NULL,
                                     scenario       = "baseline",
                                     n_draws        = 200L,
+                                    band_start     = NULL,
                                     ...) {
   coefficients <- match.arg(coefficients)
   if (length(horizon) != 2L || !is.character(horizon)) {
@@ -403,11 +404,27 @@ solve_martin_stochastic <- function(database,
                       inherits = FALSE)
 
   if (has_stoch) {
-    out <- solve_martin_stochastic_bimets(
-      database, adjustments, horizon, coefficients, estimation_end,
-      scenario, n_draws, ...
-    )
-    attr(out, "band_method") <- "stochsimulate"
+    # STOCHSIMULATE perturbs the model over the band window; an unlucky
+    # disturbance can still overflow a behavioural (e.g. XRE), so fall back to
+    # the AF-perturbation path rather than failing the whole round.
+    out <- tryCatch({
+      res <- solve_martin_stochastic_bimets(
+        database, adjustments, horizon, coefficients, estimation_end,
+        scenario, n_draws, band_start, ...
+      )
+      attr(res, "band_method") <- "stochsimulate"
+      res
+    }, error = function(e) {
+      warning("solve_martin_stochastic: STOCHSIMULATE failed (",
+              conditionMessage(e), "); falling back to AF perturbation.",
+              call. = FALSE)
+      res <- solve_martin_stochastic_fallback(
+        database, adjustments, horizon, coefficients, estimation_end,
+        scenario, min(n_draws, 60L), ...
+      )
+      attr(res, "band_method") <- "af_perturbation (stochsimulate failed)"
+      res
+    })
   } else {
     out <- solve_martin_stochastic_fallback(
       database, adjustments, horizon, coefficients, estimation_end,
@@ -426,7 +443,8 @@ solve_martin_stochastic <- function(database,
 # empirical band off the per-variable realization matrix (simulation_MM).
 solve_martin_stochastic_bimets <- function(database, adjustments, horizon,
                                            coefficients, estimation_end,
-                                           scenario, n_draws, ...) {
+                                           scenario, n_draws,
+                                           band_start = NULL, ...) {
   if (is.null(adjustments)) adjustments <- judgement::adjustment_list()
 
   model <- load_martin(
@@ -438,6 +456,20 @@ solve_martin_stochastic_bimets <- function(database, adjustments, horizon,
   end   <- judgement_parse_quarter(horizon[2])
   tsrange <- c(start$year, start$quarter, end$year, end$quarter)
 
+  # Restrict the stochastic disturbances to the forecast window so we do not
+  # perturb the well-determined in-sample period -- perturbing it can overflow
+  # a behavioural (observed: XRE at 2015Q2) and it is not where forecast
+  # uncertainty lives. Default window = last 12 quarters of the horizon.
+  end_abs   <- end$year * 4L + (end$quarter - 1L)
+  start_abs <- start$year * 4L + (start$quarter - 1L)
+  bs_abs <- if (is.null(band_start)) {
+    max(start_abs, end_abs - 11L)
+  } else {
+    bq <- judgement_parse_quarter(band_start)
+    max(start_abs, bq$year * 4L + (bq$quarter - 1L))
+  }
+  stoch_range <- c(bs_abs %/% 4L, (bs_abs %% 4L) + 1L, end$year, end$quarter)
+
   replay_afs <- residual_constant_adjustment(model)
   replay_afs <- lapply(replay_afs, function(ts) {
     extend_residual_with_decay(ts, end$year, end$quarter)
@@ -446,8 +478,8 @@ solve_martin_stochastic_bimets <- function(database, adjustments, horizon,
   afs <- inject_user_adjustments(replay_afs, user_expanded)
 
   # Disturbance structure: zero-mean normal at each behavioural's regression
-  # standard error, applied over the whole simulation range.
-  stoch_structure <- build_stoch_structure(model, tsrange)
+  # standard error, applied over the forecast (band) window only.
+  stoch_structure <- build_stoch_structure(model, stoch_range)
 
   .suppress_bimets_version_warning({
     model <- suppressWarnings(suppressMessages(bimets::STOCHSIMULATE(

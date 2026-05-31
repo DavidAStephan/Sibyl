@@ -247,8 +247,8 @@ test_that("format_sensitivity_text() surfaces a NONLINEAR caveat when flagged", 
   txt <- format_sensitivity_text(fixture)
   expect_match(txt, "NONLINEAR")
   expect_match(txt, "curvature~2.40")
-  # The header now reflects the corrected default tail (carry, not decay_50).
-  expect_match(txt, "carry")
+  # The header reflects the probe's decay_50 tail (the default for AF shocks).
+  expect_match(txt, "decay_50")
 })
 
 test_that("format_sensitivity_text() surfaces a NON-CONVERGED caveat", {

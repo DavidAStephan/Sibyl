@@ -40,8 +40,10 @@ documented in detail at [docs/llm_layer.md](docs/llm_layer.md).
    The `adjustment` S3 class in [packages/judgement/R/adjustment.R](packages/judgement/R/adjustment.R)
    carries `{equation, horizon, value, rationale, channel, expected_effect,
    confidence, target_variable, expected_direction, owner, round_id}` plus
-   tail behaviour (carry / decay_50 / zero). The default tail is **`carry`**
-   (hold the last value forward). `decay_50` reproduces the EViews
+   tail behaviour (decay_50 / carry / zero). The default tail is **`decay_50`**
+   (geometric decay, so a sustained level target on a growth-rate / first-
+   difference equation converges instead of diverging; `carry` is for the rare
+   level-residual equation). `decay_50` reproduces the EViews
    `_a(-1) * -0.5` rule, which governs *historical residual* handover into the
    forecast — not a deliberate forecaster shock — and oscillates sign quarter
    to quarter, so it is no longer the default. Add-factor magnitudes and

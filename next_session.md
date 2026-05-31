@@ -318,9 +318,13 @@ For canonical history use `git log`. Major landed workstreams:
   - `mechanical_audit()` — LLM-independent fidelity gate: checks each
     adjustment's declared `target_variable` / `expected_direction` against the
     realised projection-minus-baseline diff. Run alongside `diagnose_audit()`.
-  - Default `adjustment()` tail is now **`carry`** (was `decay_50`).
-    `decay_50` mirrors the EViews `_a(-1)*-0.5` *historical-residual* rule and
-    oscillates sign as a sustained-shock tail, so it's no longer the default.
+  - Default `adjustment()` tail is **`decay_50`**. Add-factors land on
+    equation residuals, and most MARTIN equations are growth-rate /
+    first-difference, so a sustained `carry` shock makes the LEVEL diverge
+    (a live round with `carry` on LUR drove modelled unemployment negative).
+    `decay_50` tapers the shock so a sustained level target CONVERGES; it also
+    mirrors the EViews `_a(-1)*-0.5` historical-residual handover rule. `carry`
+    remains available for level-residual equations (e.g. the TLUR trend).
   - Add-factor guardrails: `validate_adjustment_bounds()` caps `|value|` per
     unit (`log_diff<=0.02`, `level<=1.0`, `percent<=5.0`/qtr) and horizon
     `<=60` qtrs; override via `options(sibyl.af_ceiling=)` /

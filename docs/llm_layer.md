@@ -242,13 +242,16 @@ Schema source: `proposal_schema()` in `llm_helpers.R`. The LLM
 literally cannot return free-form text here — structured output is
 how SIBYL avoids parsing hallucinated JSON.
 
-**Tail default.** The `tail` field is now **`"carry"`** by default (hold the
-last horizon value forward), with `"zero"` and `"decay_50"` available.
-`decay_50` reproduces the EViews `_a(-1) * -0.5` rule, but that rule governs
-the handover of *historical residuals* into the forecast, not a deliberate
-sustained shock — used as a sustained-shock tail it flips sign every quarter.
-Older worked examples below were captured before this change and show
-`decay_50`; the current default is `carry`.
+**Tail default.** The `tail` field defaults to **`"decay_50"`**, with `"zero"`
+and `"carry"` available. Add-factors land on equation *residuals*, and most
+MARTIN equations are in growth-rate / first-difference form, so a sustained
+`"carry"` shock makes the variable's *level* diverge without bound (a live
+round with `"carry"` on LUR drove modelled unemployment negative). `"decay_50"`
+tapers the per-quarter shock past the horizon so a sustained *level* target
+(e.g. "LUR ~1pp below baseline from 2026 onward") converges — and it also
+reproduces the EViews `_a(-1) * -0.5` historical-residual handover rule. Use
+`"carry"` only for an equation whose residual is on the level itself (e.g. the
+TLUR trend); use `"zero"` for a one-off announcement.
 
 **Bounds.** Each proposed value and the horizon length are guardrailed:
 `|value|` must stay under per-unit ceilings (`log_diff <= 0.02`, `level

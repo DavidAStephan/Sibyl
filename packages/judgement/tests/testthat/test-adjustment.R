@@ -9,7 +9,7 @@ make_one <- function(...) {
     channel         = "PTM -> P -> PC",
     expected_effect = "+0.2pp CPI by 2027Q4",
     confidence      = "medium",
-    tail            = "carry",
+    tail            = "decay_50",
     owner           = "ds",
     round_id        = "2026Q2_round1",
     source          = "human"
@@ -30,9 +30,9 @@ test_that("constructor returns an adjustment with class and fields", {
   )
 })
 
-test_that("constructor defaults: tail = carry, coerced = FALSE, target NA", {
-  a <- make_one()
-  expect_equal(a$tail, "carry")
+test_that("constructor defaults: tail = decay_50, coerced = FALSE, target NA", {
+  a <- make_one(tail = NULL)  # drop the fixture tail so the constructor default applies
+  expect_equal(a$tail, "decay_50")
   expect_false(a$coerced)
   expect_true(is.na(a$target_variable))
   expect_true(is.na(a$expected_direction))
@@ -149,8 +149,8 @@ test_that("print method runs without error and includes key fields", {
   out <- capture.output(print(a))
   expect_true(any(grepl("PTM", out)))
   expect_true(any(grepl("rationale", out)))
-  # tail now defaults to carry
-  expect_true(any(grepl("carry", out)))
+  # tail now defaults to decay_50
+  expect_true(any(grepl("decay_50", out)))
 })
 
 test_that("print method flags coerced adjustments", {

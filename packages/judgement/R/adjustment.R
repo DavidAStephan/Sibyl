@@ -7,17 +7,27 @@
 # to flow through that whole pipeline.
 #
 # Tail behaviour governs how a deliberate judgement shock is extended past its
-# explicit horizon: carry (the default) holds the last value forward, zero
-# truncates, and decay_50 applies geometric decay with a sign flip.
+# explicit horizon. This matters because add-factors land on equation
+# RESIDUALS, and most MARTIN behaviorals are written in growth-rate / first-
+# difference form (TSDELTALOG / TSDELTA). On such an equation a *sustained*
+# residual shock shifts the growth rate every quarter, so the LEVEL diverges
+# without bound -- which is almost never what a narrative means. A narrative
+# like "LUR runs ~1pp below baseline from 2026 onward" is a sustained LEVEL
+# deviation: the per-quarter residual must taper once the target level is
+# reached so the level CONVERGES rather than runs away.
 #
-# NOTE on decay_50: the EViews `_a = _a(-1) * -0.5` rule in
-# references/MARTIN-master/Programs/solve_model.prg governs the handover of
-# *historical residuals* into the forecast period -- it damps the model's own
-# last-observed errors, not a forecaster's deliberate shock. As a tail for a
-# sustained judgement shock it oscillates sign every quarter, which is almost
-# never what a narrative intends. We therefore default to `carry` and keep
-# decay_50 available only for the rare case where the historical-residual
-# semantics are genuinely wanted.
+#   - decay_50 (the default): geometric decay of the residual shock past the
+#     horizon (the EViews `_a = _a(-1) * -0.5` rule from solve_model.prg). The
+#     per-quarter shock tapers to ~0, so on a first-difference equation the
+#     level converges to a finite deviation -- the right behaviour for a
+#     sustained level target. (The same rule the reference uses to hand
+#     historical residuals into the forecast period.)
+#   - zero: truncate past the horizon; the level holds exactly at its end-of-
+#     horizon deviation. Use for one-off announcements.
+#   - carry: hold the last value forward. Correct ONLY for the rare equation
+#     whose residual is on the LEVEL itself; on a growth-rate / first-
+#     difference equation it makes the level diverge without bound (a sustained
+#     LUR carry drove unemployment negative in a live round -- see git history).
 
 #' Construct an adjustment
 #'
@@ -39,12 +49,14 @@
 #' @param expected_effect Character. Plain-English description of what the
 #'   adjustment should do (e.g. `"+0.2pp CPI by 2027Q4"`).
 #' @param confidence One of `"high"`, `"medium"`, `"low"`.
-#' @param tail One of `"carry"` (default — hold the last value forward),
-#'   `"zero"` (truncate to zero beyond horizon), or `"decay_50"` (geometric
-#'   decay with a sign flip). `decay_50` reproduces the EViews
-#'   `_a(-1) * -0.5` rule, which governs *historical residual* handover, not
-#'   deliberate shocks; as a sustained-shock tail it oscillates sign, so
-#'   `carry` is the sane default. See the note at the top of this file.
+#' @param tail One of `"decay_50"` (default — geometric decay of the residual
+#'   shock past the horizon, so a level target on a growth-rate / first-
+#'   difference equation converges; reproduces the EViews `_a(-1) * -0.5`
+#'   handover rule), `"zero"` (truncate beyond horizon — the level holds at its
+#'   end-of-horizon value), or `"carry"` (hold the last value forward — correct
+#'   only for equations whose residual is on the level itself; on a growth-rate
+#'   / first-difference equation it makes the level diverge). See the note at
+#'   the top of this file.
 #' @param target_variable Character. The MARTIN variable the adjustment is
 #'   primarily expected to move (e.g. `"P"` for a PTM adjustment). Optional;
 #'   defaults to `NA`. Used by [mechanical_audit()] for the LLM-independent
@@ -74,7 +86,7 @@ adjustment <- function(equation,
                        channel        = NA_character_,
                        expected_effect = NA_character_,
                        confidence     = c("medium", "high", "low"),
-                       tail           = c("carry", "zero", "decay_50"),
+                       tail           = c("decay_50", "carry", "zero"),
                        target_variable   = NA_character_,
                        expected_direction = NA_character_,
                        coerced        = FALSE,
