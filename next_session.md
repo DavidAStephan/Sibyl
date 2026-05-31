@@ -10,20 +10,37 @@ TODO list.
 ## Where we left off
 
 **SIBYL is a working end-to-end pipeline with a fully agentic LLM round.**
-Live data flows from FRED + RBA + ABS + WorldBank + BoM into `sibyldata`,
-gets pivoted / spliced / Chow-Lin'd / formula-derived into a MARTIN-shape
-database, solved by `martin::solve_martin()` against the vendored bimets
-model, adjusted by the LLM judgement layer with a pre-computed
+Live data flows from RBA + ABS + WorldBank + BoM (FRED needs a key) into
+`sibyldata`, gets pivoted / spliced / Chow-Lin'd / formula-derived into a
+MARTIN-shape database, solved by `martin::solve_martin()` against the vendored
+bimets model, adjusted by the LLM judgement layer with a pre-computed
 sensitivity matrix + iterative refinement loop + round-trip audit, and
 rendered as a Quarto report.
 
-Status as of the last commit:
+> **⚠ Branch state — read first.** The latest session ran a multi-agent
+> evaluation and a **Tier 1-3 improvement build**, validated by a live
+> end-to-end round. It all lives on branch **`improvements/tiers-1-3`**
+> (2 commits, **NOT merged to `main`**). `main` is the pre-evaluation state.
+> Review with `git log main..improvements/tiers-1-3` / `git diff main` and
+> merge when happy. The commits:
+> 1. *Tier 1-3 roadmap* — frozen + human-gated by default, add-factor
+>    magnitude/horizon guardrails, honest provenance manifest, sensitivity
+>    linearity probe, `solve_martin_stochastic` uncertainty bands,
+>    `mechanical_audit`, exogenize round-trip, `renv.lock`, doc truth-up.
+> 2. *Live-round fixes* — reverted the `carry` tail default back to `decay_50`
+>    (a `carry` regression drove modelled unemployment negative), and fixed
+>    `solve_martin_stochastic` to perturb only the forecast window (it
+>    overflowed on `XRE` in-sample).
+
+Status as of the last commit (`improvements/tiers-1-3`):
 
 | Item | Status |
 |---|---|
-| Test suite | 553 pass, 0 fail (~11 skip; live-API tests that need keys) |
-| Pipeline `tar_make()` (live default) | 21/21 targets, ~8m cold (live data fetch + sensitivity matrix dominate) |
-| Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on headline aggregates |
+| Test suites | judgement 220 / sibyldata 301 (+4 live-API skip) / nowcast 58 / martin 175 — 754 assertions, 0 fail |
+| Pipeline `tar_make()` (live, frozen, `SIBYL_APPROVE=1`) | 30/30 targets, ~8m cold; renders `reports/round.html` |
+| Coefficients | **frozen** by default (`estimation_end = NULL`); re-estimation is an explicit, logged opt-in |
+| Human-approval gate | **ON** by default (`interactive` / `SIBYL_APPROVE=1` token); unattended runs STOP on un-reviewed proposals |
+| Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on the frozen, no-adjustment, in-sample path |
 | Live database vs fixture coverage | every fixture var is populated, but via a mix of source classes — read the provenance manifest (`database_provenance(db)`: `live` / `fixture_fallback` / `vendored_wf1` / `proxy` / `dummy` / `derived`), not a single "100%" headline. Live path supplies ~113 of 205; the rest are dummies/scalars/state-space-wf1/proxy/fixture-fallback. "vintage" is a fetch-date stamp, not point-in-time. |
 | Nowcast handover | bridge_monthly default on growth rates (RC←RT, Y←HOURS, LE←LE); ARIMA fallback for unmapped targets. Committed backtest: bridge MAPE 9.8% / 82% within 5% on the fixture (`packages/nowcast/inst/eval/handover_backtest.md`) |
 | End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Sensitivity matrix → propose (Sonnet 4.6) → solve → describe (Haiku) → audit (Haiku) → refine if disagree, repeat; best-iter selection. `diagnose_audit()` separates translation gaps from inevitable MARTIN endogenous responses. Multi-narrative coherence test confirms distinct equations per narrative. |
@@ -89,8 +106,48 @@ if Quarto isn't on PATH.
 
 ## What to pick up next
 
-Ranked by leverage. Each item is independent — pick whichever you have
-appetite for.
+Section 0 is the deck-clearing follow-ups from the Tier 1-3 build; sections
+1-3 are the older, larger bets. Each item is independent.
+
+### 0. Follow-ups from the Tier 1-3 build (small, well-scoped)
+
+- **Merge `improvements/tiers-1-3` to `main`** once reviewed (see Branch state
+  above), then `targets::tar_destroy()` so the next round rebuilds with the
+  merged code.
+- **Re-run a full live LLM round post-fix.** The last live round predates the
+  `decay_50` revert (it used `carry` + an oversized LUR AF + NCR-exogenize and
+  drove LUR to -0.82%). The fix is validated deterministically; a fresh
+  `SIBYL_APPROVE=1 tar_make()` would reconfirm the headline reads sane and that
+  the `solve_martin_stochastic` bands render in the report.
+- **`mechanical_audit` is direction-only.** It reported `agrees = TRUE` on a
+  -5.53pp overshoot. Add a magnitude / plausibility dimension (e.g. flag when a
+  rate leaves [0, 100], or the realised move is > Nx the declared target).
+- **Regenerate `man/*.Rd`.** Only `NAMESPACE` was regenerated for the new
+  exports (`solve_martin_stochastic`, `mechanical_audit`, `database_provenance`,
+  `classify_provenance`); run `devtools::document()` on all four packages.
+- **Break the `martin -> judgement` dependency cleanly.** `martin` now
+  `Imports judgement` so `solve_martin` resolves — pragmatic, but it pulls
+  `ellmer` into the model layer. Cleanest fix: relocate the pure `adjustment`
+  S3 class + `expand_adjustments` + quarter helpers into `martin` (or a base
+  package) and have `judgement` import that.
+- **Make provenance survive transit.** `attr(db, "provenance")` is dropped by
+  `extend_exogenous` / `chop_for_ragged_edge` / `splice_handover`, so the report
+  degrades to "no manifest". Add a dedicated `provenance_manifest` target.
+- **Uncertainty bands are equation-disturbance only.** `solve_martin_stochastic`
+  perturbs each behavioural at its regression SE over the forecast window; it
+  does NOT propagate coefficient covariance or exogenous-path uncertainty, so
+  the bands are a lower bound. Optionally render them as a fan chart (report +
+  dashboard currently plot only the single path).
+- **`update_data()` per-source success/failure.** It warns but does not report
+  which sources failed; `round_metadata` infers failure from `fixture_fallback`
+  provenance. Return an explicit per-source status.
+- **Point-in-time vintage.** "vintage" is still a fetch-date stamp (no
+  `realtime_start/end` to FRED, no ABS/RBA archive lookup), so a past round is
+  not byte-reproducible. `renv.lock` is now committed.
+- **`.Renviron`:** `FRED_API_KEY` is empty, so live world proxies (WP/WPX/WY/
+  POIL/...) fall back to the 2019Q3 fixture. Add a key for a fuller live round.
+- **Dashboard review table** neutralises a row by zeroing its value (no inline
+  delete); add real row-deletion.
 
 ### 1. Joint MLE for state-space trends (~1 session)
 
@@ -196,7 +253,7 @@ packages/
 │   └── inst/extdata/
 │       ├── MARTINMOD_AF.txt        ← canonical model file
 │       ├── martin_data_fixture.xlsx
-│       └── equation_catalogue.csv  ← 70 equations, adjustable flag
+│       └── equation_catalogue.csv  ← 76 equations (56 adjustable)
 │
 ├── judgement/
 │   ├── R/
@@ -225,7 +282,7 @@ scripts/
 ├── monthly_bridge_demo.R        ← bridge vs ARIMA comparison
 └── multi_narrative_coherence_check.R  ← 3-narrative LLM coherence probe
 
-_targets.R                       ← end-to-end pipeline (21 targets)
+_targets.R                       ← end-to-end pipeline (30 targets)
 reports/round.qmd                ← Quarto round report
 app/app.R                        ← Shiny dashboard (just dashboard)
 docs/llm_layer.md                ← LLM-judgement walkthrough
@@ -266,7 +323,21 @@ CLAUDE.md                        ← context for sessions
   `modify_data.prg` probably needs a similar splice rule.
 
 - **`_targets/` is gitignored.** Per-machine state. To restart clean:
-  `targets::tar_destroy()`.
+  `targets::tar_destroy()`. Note `targets` does NOT auto-invalidate on
+  `load_all`'d package-internal code changes, so after editing a package run
+  `tar_destroy()` (or `tar_invalidate(everything())`) before a live `tar_make()`
+  to actually exercise the new code.
+
+- **The pipeline STOPS without approval.** `tar_make()` now blocks the
+  `approved_adjustments` target on a non-empty unapproved proposal: in an
+  interactive session it prompts; unattended it requires `SIBYL_APPROVE=1`
+  (or the `approve_token` target = "1") or it errors. This is design principle
+  #4 restored — adjust any CI/cron accordingly.
+
+- **`FRED_API_KEY` is empty in `.Renviron`.** Live FRED fetches fail (caught by
+  `tolerate_failures`) so world proxies (WP/WPX/WY/POIL/...) fall back to the
+  2019Q3 fixture — visible in `database_provenance(db)` as `fixture_fallback`
+  and in the report's degraded-mode banner. Add a key for a fuller live round.
 
 - **Quarto must be on PATH** at `tar_make()` time, not just when
   the report target runs. The shim soft-skips if absent.
@@ -347,7 +418,7 @@ For canonical history use `git log`. Major landed workstreams:
     vendored from io_calcs output.
   - Backward splices (PH ← PH_OLD; NBR ← F05_FILRLBWAV).
   - `extend_exogenous()` carries exogenous variables past the
-    fixture's 2019Q3 cutoff so the horizon can run to 2025Q4.
+    fixture's 2019Q3 cutoff so the horizon can run to 2028Q2.
 
 - **State-space trends (PI_E, TLUR, RSTAR, TDLLA, TDLLPOP, TDLLHPP):**
   - V0 KFAS ports of pistar.prg / nairu.prg / rstar.prg / supply_side.prg.
@@ -415,7 +486,7 @@ For canonical history use `git log`. Major landed workstreams:
     EViews coefficients" description (95 behaviorals, ~51 c1=1, `ESTIMATE`
     re-fits every load, "frozen" = embedded 2019Q3 sample); recorded the
     frozen-by-default coefficient path, the restored human-approval gate, the
-    `carry` tail default, the real nowcast backtest number (bridge MAPE 9.8%),
+    `decay_50` tail default, the real nowcast backtest number (bridge MAPE 9.8%),
     the provenance-manifest coverage framing, `renv.lock` committed, and the
     new guardrails / linearity probe / `solve_martin_stochastic` /
     `mechanical_audit` / exogenize-round-trip capabilities.
