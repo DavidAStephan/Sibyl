@@ -236,3 +236,11 @@ IAD_W_X,derived,NA,NA,Q,NA,identity,Import-adjusted demand weight for exports,Ra
 NBR,rba,F05_FILRLBWAV,F05,M,mean,direct,Business borrowing rate (historical RBA F05 weighted-average; deprecated 2019Q3 but spans 1978-2019),Percent per annum,NA
 RT,abs,A3348585R,8501.0,M,mean,direct,Retail trade turnover (total industries; seasonally adjusted); leading monthly indicator for quarterly consumption,AUD millions,NA
 NHFA_TREND,derived,NA,NA,Q,NA,dummy,"Range dummy: 1 from 2003Q3-2007Q2 (financial-asset-trend period; used in NHFA behavioural)",0/1,NA
+NFOY,abs,A3535270A,5302.0,Q,NA,direct,Net primary income (BoP; seasonally adjusted) -- external_accounting feature,AUD millions,NA
+NTRF,abs,A3535267L,5302.0,Q,NA,direct,Net secondary income (BoP; seasonally adjusted) -- external_accounting feature,AUD millions,NA
+NTRANSFERS,abs,A2302919C,5206.0,Q,NA,direct,General government social assistance benefits in cash (SA) -- fiscal_accounting feature,AUD millions,NA
+NGPRI,abs,A2302732C,5206.0,Q,NA,direct,General government total primary income receivable (SA),AUD millions,NA
+NGSEC,abs,A2302741F,5206.0,Q,NA,direct,General government total secondary income receivable (SA),AUD millions,NA
+NGREV,derived,NA,NA,Q,NA,derived,Total general government revenue (primary + secondary income receivable) -- fiscal_accounting feature,AUD millions,NGPRI + NGSEC
+NGEXP,abs,A2302753R,5206.0,Q,NA,direct,General government total income payable / total expenditure (SA) -- fiscal_accounting feature,AUD millions,NA
+NGINT,abs,A2302745R,5206.0,Q,NA,direct,General government total interest payable (SA) -- fiscal_accounting feature,AUD millions,NA

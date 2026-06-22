@@ -42,14 +42,29 @@ bimets reference (regression test 35/35). Full suite: **786 pass, 0 fail**.
 Tests: `test-model-features.R`, `test-production.R`, `test-accounting.R`,
 `test-feedback.R`, `test-respecification.R`.
 
-**Known limitation (M1 data).** The fiscal and external blocks currently seed
-their *inputs* with proxies — `NFOY`/`NTRF`=0, transfers proportional to GDP,
-effective tax rates auto-calibrated so the budget covers spending plus
-steady-state interest, debt history seeded at the target ratio. The accounting
-*structure* is correct and the demo numbers are realistic, but real use needs
-the ABS series in §B.3 wired into the seeding (ABS 5206.0 government income/
-outlay; 5302.0 BoP primary income + IIP). That live-fetch wiring is the
-remaining M1 task; it does not affect the default path or the regression test.
+**M1 data wiring (done, with one honest caveat).** Real ABS series are now in
+the catalogue and feed the features via their fallback hooks (verified live):
+
+- **External (clean win):** `NFOY` = net primary income (ABS 5302.0 SA,
+  A3535270A) and `NTRF` = net secondary income (A3535267L). The current account
+  now reflects Australia's large primary-income deficit — `CAD_GDP` ~3% of GDP
+  vs a ~0 trade balance, the correct economic effect.
+- **Fiscal:** real social-assistance benefits (`NTRANSFERS`, A2302919C) feed
+  spending; `NGREV`/`NGEXP`/`NGINT` (GG income-account revenue/expenditure/
+  interest) are carried as reporting series. Revenue is still auto-calibrated to
+  a balanced target so the open-loop debt demo stays bounded (`BG_GDP` [6,32]%,
+  `DEF_GDP` [-1.6,+1.4]%).
+- **Caveat (genuine, structural):** a *history-matched* deficit/debt path needs
+  the ABS general-government **income account** reconciled with MARTIN's
+  **expenditure-side** `NG` (they are different accounting bases — the income
+  account excludes government investment). That is the income-side-of-GDP gap
+  the review itself flags (§4.9 SF3); it is out of scope here, so the fiscal
+  *balance* remains the bounded structural demo rather than the realised path.
+  The debt seed and IIP-based `VNFL` seed likewise stay proxies (no clean
+  quarterly govt-debt / currency-composition series wired yet).
+
+None of this affects the default path or the regression test (the fixture has
+none of the new series, so features fall back to proxies there).
 
 bimets notes discovered during implementation: identities do **not** support
 `@recode` (the `.txt` model uses none — confirming the review's ELB-floor

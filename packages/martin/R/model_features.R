@@ -424,11 +424,15 @@ seed_feature_data <- function(database, features = character(0),
               m[, "ETR_INDIRECT"] * m[, "NC"] +
               m[, "ETR_CORP"] * (m[, "NY"] - m[, "NHCOE"])
   nspend   <- m[, "NG"] + m[, "NTRANSFERS"]
-  # Revenue should cover spending PLUS the interest on the target debt, so that
-  # at the target debt the primary balance is ~0 and the (open-loop, unstable)
-  # debt recursion stays near the seed over the demo window. Calibrate over the
-  # whole finite history. (A debt-stabilising rule -- fiscal_rule, M4 -- is what
-  # genuinely pins the path; this just keeps the no-rule demo bounded.)
+  # Revenue covers spending plus the interest on the target debt, so at the
+  # target debt the primary balance is ~0 and the (open-loop, unstable) debt
+  # recursion stays near the seed over the demo window. With real transfers
+  # (NTRANSFERS from ABS) `nspend` reflects actual social benefits; the
+  # debt-stabilising rule (fiscal_rule, M4) is what genuinely pins the path.
+  # NOTE: a history-matched deficit/debt path would need the ABS general-
+  # government INCOME account reconciled with MARTIN's expenditure-side NG (the
+  # income-side-of-GDP gap the review flags); out of scope here, so NGREV/NGEXP
+  # are carried as reporting series rather than forced into the balance.
   ss_interest <- (p$fiscal_iirg / 100) * (p$fiscal_bg_target / 100) * m[, "NY"]
   target   <- nspend + ss_interest + p$fiscal_def_target * m[, "NY"]
   ok <- is.finite(nrev_raw) & is.finite(target) & nrev_raw > 0

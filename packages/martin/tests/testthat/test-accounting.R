@@ -41,6 +41,23 @@ test_that("external_accounting is consistent, sane and baseline-neutral", {
   }
 })
 
+test_that("external_accounting incorporates net foreign income (M1 wiring)", {
+  data <- fixture_or_skip()
+  # Inject a synthetic primary-income deficit of 3% of GDP (as the real ABS
+  # net primary income, A3535270A, supplies in the live pipeline).
+  ny  <- stats::as.ts(data$NY)
+  tsp <- stats::tsp(ny)
+  st  <- c(floor(tsp[1] + 1e-9), round((tsp[1] - floor(tsp[1] + 1e-9)) * 4 + 1))
+  data$NFOY <- bimets::TIMESERIES(-0.03 * as.numeric(ny), START = st, FREQ = 4)
+
+  ext <- solve_martin(data, NULL, horizon = c("2010Q1", "2019Q3"),
+                      features = "external_accounting", scenario = "ext")
+  # NCA = NTB + NFOY, so CAD_GDP = -TB_GDP + 3 (the income deficit adds ~3pp).
+  cad <- solved_value(ext, "CAD_GDP")
+  tb  <- solved_value(ext, "TB_GDP")
+  expect_true(abs(mean(cad) - (-mean(tb) + 3)) < 0.5)
+})
+
 test_that("fiscal_accounting is consistent, bounded and baseline-neutral", {
   data <- fixture_or_skip()
   H <- c("2010Q1", "2019Q3")
