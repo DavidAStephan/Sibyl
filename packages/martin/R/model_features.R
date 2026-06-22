@@ -35,6 +35,11 @@
 #'     surplus, as the residual), `PROFIT_SHARE` and `LABOUR_SHARE`. `GMI` and
 #'     `TAX_PROD_NET` are real ABS series (5206.0) when present, else share-of-GDP
 #'     proxies. See `docs/income_side_scope.md`.}
+#'   \item{`corporate_accelerator`}{(I-3, T3) Balance-sheet financial accelerator.
+#'     Adds the corporate-leverage identity `LEV` (debt-to-annual-GDP, from ABS
+#'     `DCORP` A3427913W or a proxy) and re-estimates the business spread `NBRSP`
+#'     with a lagged-leverage term, so a more-indebted corporate sector widens the
+#'     external-finance premium (review F1/F5/SF4). Off by default.}
 #'   \item{`fx_premium`}{(T2) Debt-elastic exchange-rate risk premium: adds a
 #'     `NFL_GDP` term to the `RTWI` equation. Needs `external_accounting`.}
 #'   \item{`fiscal_rule`}{(T2) Debt-stabilising fiscal rule on the effective
@@ -53,7 +58,7 @@ NULL
 # blocks), then swaps.
 .MARTIN_FEATURES <- c(
   "output_gap", "external_accounting", "fiscal_accounting", "income_side",
-  "household_income",
+  "household_income", "corporate_accelerator",
   "fx_premium", "fiscal_rule", "convex_ptm", "inverted_le"
 )
 
@@ -95,7 +100,10 @@ feature_defaults <- function() {
     # Household income account (I-2 household): proxy shares of GDP for
     # HH_PRIMARY / NHTAX when the real ABS series are absent.
     hh_primary_share = 0.42,
-    hh_tax_share     = 0.13
+    hh_tax_share     = 0.13,
+    # Corporate accelerator (I-3): proxy corporate-debt share of GDP when the
+    # real ABS series (DCORP) is absent.
+    corp_debt_share  = 0.45
   )
 }
 
@@ -115,6 +123,8 @@ feature_new_vars <- function(features) {
     v <- c(v, "GOS", "PROFIT_SHARE", "LABOUR_SHARE")
   if ("household_income" %in% features)
     v <- c(v, "HH_NONLAB", "NHOY_RESID", "NHDY_RECON", "HH_TAXRATE")
+  if ("corporate_accelerator" %in% features)
+    v <- c(v, "LEV")
   unique(v)
 }
 
@@ -341,6 +351,31 @@ feature_new_vars <- function(features) {
   )
 }
 
+# I-3 corporate accelerator: a balance-sheet financial-accelerator hook. Adds a
+# corporate-leverage identity LEV (debt-to-annual-GDP) and makes the business
+# borrowing spread NBRSP load on lagged leverage, so a more-indebted corporate
+# sector raises the external-finance premium (review F1/F5/SF4) -- replacing the
+# purely cyclical LURGAP proxy with a genuine leverage channel.
+.block_corporate <- function(p) {
+  c(
+    "COMMENT> SIBYL corporate_accelerator (I-3): corporate leverage",
+    "COMMENT> LEV  corporate debt, per cent of annual GDP",
+    "IDENTITY> LEV",
+    "EQ> LEV = DCORP / (4*NY) * 100",
+    ""
+  )
+}
+
+.feature_corporate_accelerator <- function(text, p) {
+  # Add a lagged-leverage term to NBRSP and free its new coefficient. This
+  # re-estimates NBRSP (T3); the default model keeps the published 3-term form.
+  .swap_once(
+    text,
+    "EQ> NBRSP = c1 + c2*TSLAG(NBRSP,1) + c3*LURGAP\nCOEFF> c1 c2 c3",
+    "EQ> NBRSP = c1 + c2*TSLAG(NBRSP,1) + c3*LURGAP + c4*TSLAG(LEV,1)\nCOEFF> c1 c2 c3 c4"
+  )
+}
+
 # --- swap-based features ----------------------------------------------------
 
 .feature_fx_premium <- function(text, p) {
@@ -410,6 +445,8 @@ apply_model_features <- function(lines, features = character(0),
     blocks <- c(blocks, .block_income_side(p))
   if ("household_income" %in% features)
     blocks <- c(blocks, .block_household_income(p))
+  if ("corporate_accelerator" %in% features)
+    blocks <- c(blocks, .block_corporate(p))
   if (length(blocks)) lines <- .insert_blocks_before_end(lines, blocks)
 
   # 2. text swaps (operate on the full text, incl. inserted blocks)
@@ -419,6 +456,8 @@ apply_model_features <- function(lines, features = character(0),
   if ("convex_ptm" %in% features)
     text <- .swap_once(text, "+c7*LURGAP", "+c7*(LURGAP/LUR)")
   if ("inverted_le" %in% features)  text <- .feature_inverted_le(text, p)
+  if ("corporate_accelerator" %in% features)
+    text <- .feature_corporate_accelerator(text, p)
 
   strsplit(text, "\n", fixed = TRUE)[[1]]
 }
@@ -498,6 +537,17 @@ seed_feature_data <- function(database, features = character(0),
       database <- .seed_proportional(database, "NTRANSFERS", p$fiscal_transfer_share)
     ser <- .compute_household_income(database, p)
     for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
+  }
+
+  if ("corporate_accelerator" %in% features) {
+    if (is.null(database[["DCORP"]]))
+      database <- .seed_proportional(database, "DCORP", p$corp_debt_share)
+    if (is.null(database[["LEV"]])) {
+      a <- .align_db(database, c("DCORP", "NY"))
+      m <- a$mat
+      database[["LEV"]] <- bimets::TIMESERIES(
+        m[, "DCORP"] / (4 * m[, "NY"]) * 100, START = a$start, FREQ = 4)
+    }
   }
 
   if ("fiscal_accounting" %in% features) {

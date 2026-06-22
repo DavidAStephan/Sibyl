@@ -40,6 +40,11 @@ untouched. See \code{docs/income_side_scope.md}.}
 surplus, as the residual), \code{PROFIT_SHARE} and \code{LABOUR_SHARE}. \code{GMI} and
 \code{TAX_PROD_NET} are real ABS series (5206.0) when present, else share-of-GDP
 proxies. See \code{docs/income_side_scope.md}.}
+\item{\code{corporate_accelerator}}{(I-3, T3) Balance-sheet financial accelerator.
+Adds the corporate-leverage identity \code{LEV} (debt-to-annual-GDP, from ABS
+\code{DCORP} A3427913W or a proxy) and re-estimates the business spread \code{NBRSP}
+with a lagged-leverage term, so a more-indebted corporate sector widens the
+external-finance premium (review F1/F5/SF4). Off by default.}
 \item{\code{fx_premium}}{(T2) Debt-elastic exchange-rate risk premium: adds a
 \code{NFL_GDP} term to the \code{RTWI} equation. Needs \code{external_accounting}.}
 \item{\code{fiscal_rule}}{(T2) Debt-stabilising fiscal rule on the effective

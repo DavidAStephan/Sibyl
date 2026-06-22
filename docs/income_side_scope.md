@@ -168,7 +168,23 @@ project sensibly when on (taxes as effective-rate×base, transfers on `LUR`).
 - **Effort:** large. The intricate reconciliation; ABS sector accounts carry
   their own discrepancies that must be parked somewhere.
 
-### Tier I-3 — corporate balance sheet + financial accelerator *(large — caps the SFC agenda)*
+### Tier I-3 — corporate balance sheet + financial accelerator *(large — caps the SFC agenda)* — **ACCELERATOR IMPLEMENTED**
+
+> **Status: the financial accelerator is shipped** as the `corporate_accelerator`
+> feature (the high-value F1/F5/SF4 payoff). It adds a corporate-leverage identity
+> `LEV` (debt-to-annual-GDP, from ABS `DCORP` = private NFC loans A3427913W, or a
+> proxy) and re-estimates the business borrowing spread `NBRSP` with a
+> lagged-leverage term, so a more-indebted corporate sector raises the
+> external-finance premium -- a genuine balance-sheet channel replacing the purely
+> cyclical `LURGAP` proxy. On real ABS data `LEV` is 36-47% of GDP and the
+> estimated leverage coefficient is positive (higher leverage -> wider spread, the
+> BGG sign). Opt-in (re-estimates `NBRSP`); off by default. Tests:
+> `test-corporate-accelerator.R`. **Still to do in I-3:** the full corporate
+> balance sheet (`VCORP` from accumulated retained earnings, a consolidated
+> debt-to-equity `LEV`, the SF2 net-lending adding-up identity) -- the accelerator
+> currently uses a debt-to-GDP leverage proxy from the dominant private-NFC
+> sub-sector rather than a fully consolidated D/E.
+
 
 ```
 Corporate net worth:  VCORP = VCORP(-1) + RET_EARN + net capital formation + revaluation
