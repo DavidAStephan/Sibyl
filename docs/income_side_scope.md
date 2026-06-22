@@ -116,7 +116,22 @@ corporate sector).
   receivable). Several new direct series.
 - **Effort:** medium.
 
-### Tier I-2 — secondary income: the fiscal & household reconciliation *(large — the core)*
+### Tier I-2 — secondary income: the fiscal & household reconciliation *(large — the core)* — **GOVERNMENT PART IMPLEMENTED**
+
+> **Status: the fiscal reconciliation is shipped** (`fiscal_mode = "reconciled"`).
+> It resolves the M1 caveat: total outlays = MARTIN's endogenous `NG`
+> (consumption+investment) **plus** the ABS income-account payables (transfers +
+> interest + subsidies) — the two are complementary, not the same basis (the M1
+> bug subtracted `NG`, cancelling them). Revenue is endogenous (income tax on
+> `NHDY`, corporate tax on the income-side `GOS`, production tax) with a residual
+> plug to actual `NGREV`; interest uses the actual ABS series; debt is reported
+> in annual-GDP units. On real ABS data 2010–19: `DEF_GDP` mean ~2.7% (peaking
+> ~6.7% post-GFC, falling) and `BG_GDP` rising 31→43% — the realised Australian
+> trajectory. Tests: `test-fiscal-reconciled.R`. **Still to do in I-2:** the
+> household side — decompose `NHOY` into property income + GMI − taxes +
+> transfers (baseline-neutrality-sensitive, `NHOY → NHDY → RC`), and corporate
+> retained earnings (feeds I-3).
+
 
 The "Sudoku": secondary distribution of income (taxes and transfers) maps
 primary income to disposable income, consistently across sectors.

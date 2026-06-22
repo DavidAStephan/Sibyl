@@ -23,8 +23,12 @@ labour-augmenting efficiency trend \code{EFF} in the database (see
 accounting. Adds \code{NTB}, \code{TB_GDP}, \code{NCA}, \code{VNFL}, \code{NFL_GDP}, \code{CAD_GDP}.
 Uses \code{NFOY}/\code{NTRF} if present (else 0) and a \code{VNFL} seed.}
 \item{\code{fiscal_accounting}}{Government budget-and-debt accounting. Adds
-\code{NREV}, \code{NSPEND}, \code{NLEND}, \code{INTG}, \code{BG}, \code{BG_GDP}, \code{DEF_GDP}. Uses
-effective tax rates / transfers as exogenous inputs.}
+\code{NREV}, \code{NSPEND}, \code{NLEND}, \code{INTG}, \code{BG}, \code{BG_GDP}, \code{DEF_GDP}.
+\code{feature_params$fiscal_mode = "demo"} (default) uses proxy inputs with a
+balanced auto-calibration; \code{"reconciled"} (I-2) matches the balance to the
+realised ABS income account (\code{NG} + income-account payables = total
+outlays, corporate tax on \code{GOS}), needing the real fiscal series +
+\code{income_side}. Debt is in annual-GDP units. See \code{docs/income_side_scope.md}.}
 \item{\code{income_side}}{(I-0) Income side of GDP: the decomposition
 \code{NY = NHCOE + GOS + GMI + TAX_PROD_NET}. Adds \code{GOS} (gross operating
 surplus, as the residual), \code{PROFIT_SHARE} and \code{LABOUR_SHARE}. \code{GMI} and

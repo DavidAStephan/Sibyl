@@ -18,8 +18,12 @@
 #'     accounting. Adds `NTB`, `TB_GDP`, `NCA`, `VNFL`, `NFL_GDP`, `CAD_GDP`.
 #'     Uses `NFOY`/`NTRF` if present (else 0) and a `VNFL` seed.}
 #'   \item{`fiscal_accounting`}{Government budget-and-debt accounting. Adds
-#'     `NREV`, `NSPEND`, `NLEND`, `INTG`, `BG`, `BG_GDP`, `DEF_GDP`. Uses
-#'     effective tax rates / transfers as exogenous inputs.}
+#'     `NREV`, `NSPEND`, `NLEND`, `INTG`, `BG`, `BG_GDP`, `DEF_GDP`.
+#'     `feature_params$fiscal_mode = "demo"` (default) uses proxy inputs with a
+#'     balanced auto-calibration; `"reconciled"` (I-2) matches the balance to the
+#'     realised ABS income account (`NG` + income-account payables = total
+#'     outlays, corporate tax on `GOS`), needing the real fiscal series +
+#'     `income_side`. Debt is in annual-GDP units. See `docs/income_side_scope.md`.}
 #'   \item{`income_side`}{(I-0) Income side of GDP: the decomposition
 #'     `NY = NHCOE + GOS + GMI + TAX_PROD_NET`. Adds `GOS` (gross operating
 #'     surplus, as the residual), `PROFIT_SHARE` and `LABOUR_SHARE`. `GMI` and
@@ -69,6 +73,12 @@ feature_defaults <- function() {
     fiscal_transfer_share = 0.11,  # transfers as a share of GDP (proxy)
     fiscal_iirg     = 4,           # implicit interest rate on govt debt (%)
     fiscal_def_target = 0.0,       # target primary balance / GDP for calibration
+    # I-2 reconciliation: "demo" (M1 bounded structural demo) or "reconciled"
+    # (income-account basis, balance matched to actual NGREV/NGEXP; needs the
+    # real fiscal series + income_side for the GOS corporate-tax base).
+    fiscal_mode     = "demo",
+    fiscal_etr_income = 0.12,       # income-tax rate on household disposable income
+    fiscal_etr_gos    = 0.20,       # corporate-tax rate on gross operating surplus
     # External accounting.
     nfl_seed = NA_real_,
     # Income side (I-0): proxy shares of GDP used only when the real ABS
@@ -191,6 +201,7 @@ feature_new_vars <- function(features) {
 }
 
 .block_fiscal <- function(p) {
+  if (identical(p$fiscal_mode, "reconciled")) return(.block_fiscal_reconciled(p))
   # ETR_DIRECT, ETR_INDIRECT, ETR_CORP, NTRANSFERS, IIRG are exogenous inputs.
   # When fiscal_rule is also requested, ETR_DIRECT is replaced by an identity
   # (see .feature_fiscal_rule). Bases reuse in-model nominal series.
@@ -204,9 +215,9 @@ feature_new_vars <- function(features) {
     "IDENTITY> NSPEND",
     "EQ> NSPEND = NG + NTRANSFERS",
     "",
-    "COMMENT> INTG  debt interest (implicit rate on lagged debt)",
+    "COMMENT> INTG  debt interest (annual implicit rate /4 on lagged debt)",
     "IDENTITY> INTG",
-    "EQ> INTG = IIRG/100 * TSLAG(BG,1)",
+    "EQ> INTG = IIRG/400 * TSLAG(BG,1)",
     "",
     "COMMENT> NLEND  government net lending",
     "IDENTITY> NLEND",
@@ -216,9 +227,9 @@ feature_new_vars <- function(features) {
     "IDENTITY> BG",
     "EQ> BG = TSLAG(BG,1) - NLEND",
     "",
-    "COMMENT> BG_GDP  debt, per cent of GDP",
+    "COMMENT> BG_GDP  debt, per cent of annual GDP (4*NY)",
     "IDENTITY> BG_GDP",
-    "EQ> BG_GDP = BG / NY * 100",
+    "EQ> BG_GDP = BG / (4*NY) * 100",
     "",
     "COMMENT> DEF_GDP  fiscal deficit, per cent of GDP",
     "IDENTITY> DEF_GDP",
@@ -242,6 +253,51 @@ feature_new_vars <- function(features) {
     "COMMENT> LABOUR_SHARE  compensation of employees, per cent of GDP (= NHWS*100)",
     "IDENTITY> LABOUR_SHARE",
     "EQ> LABOUR_SHARE = NHCOE / NY * 100",
+    ""
+  )
+}
+
+# I-2 reconciled fiscal block (income-account basis; needs income_side for GOS).
+# Major taxes are endogenous (rate x base); NREV_OTHER / NGEXP_OTHER are
+# exogenous residuals that plug modelled revenue/spending to the actual ABS
+# income-account totals, so the balance NLEND = NREV - NSPEND matches history
+# while income tax responds to NHDY, corporate tax to GOS, transfers to LUR and
+# interest to the debt stock.
+.block_fiscal_reconciled <- function(p) {
+  c(
+    "COMMENT> SIBYL fiscal_accounting (I-2 reconciled): income-account basis",
+    "COMMENT> NREV  revenue: income tax(NHDY) + corporate tax(GOS) + production tax + residual",
+    "IDENTITY> NREV",
+    "EQ> NREV = ETR_DIRECT*NHDY + ETR_GOS*GOS + TAX_PROD_NET + NREV_OTHER",
+    "",
+    "COMMENT> INTG  debt interest (actual ABS general-government interest payable;",
+    "COMMENT> exogenous here so the balance matches history -- a debt-elastic",
+    "COMMENT> interest feedback is a later refinement, review G4)",
+    "IDENTITY> INTG",
+    "EQ> INTG = NGINT",
+    "",
+    "COMMENT> NSPEND  total outlays: govt demand NG (consumption+investment, model-",
+    "COMMENT> endogenous) + transfers + interest + an exogenous income-account",
+    "COMMENT> residual (subsidies/other). NG and the income-account payables are",
+    "COMMENT> complementary and sum to total expenditure.",
+    "IDENTITY> NSPEND",
+    "EQ> NSPEND = NG + NTRANSFERS + INTG + NGEXP_OTHER",
+    "",
+    "COMMENT> NLEND  government net lending (consistent income-account balance)",
+    "IDENTITY> NLEND",
+    "EQ> NLEND = NREV - NSPEND",
+    "",
+    "COMMENT> BG  government debt stock",
+    "IDENTITY> BG",
+    "EQ> BG = TSLAG(BG,1) - NLEND",
+    "",
+    "COMMENT> BG_GDP  debt, per cent of annual GDP (4*NY)",
+    "IDENTITY> BG_GDP",
+    "EQ> BG_GDP = BG / (4*NY) * 100",
+    "",
+    "COMMENT> DEF_GDP  fiscal deficit, per cent of GDP",
+    "IDENTITY> DEF_GDP",
+    "EQ> DEF_GDP = -NLEND / NY * 100",
     ""
   )
 }
@@ -379,31 +435,8 @@ seed_feature_data <- function(database, features = character(0),
     for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
-  if ("fiscal_accounting" %in% features) {
-    database <- ensure_exog(database, "ETR_DIRECT",   p$fiscal_etr_direct)
-    database <- ensure_exog(database, "ETR_INDIRECT", 0.10)
-    database <- ensure_exog(database, "ETR_CORP",     0.05)
-    database <- ensure_exog(database, "IIRG",         p$fiscal_iirg)
-    if (is.null(database[["NTRANSFERS"]])) {  # transfers proportional to GDP
-      nyts <- stats::as.ts(database[["NY"]])
-      tsp  <- stats::tsp(nyts)
-      sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
-      database[["NTRANSFERS"]] <- bimets::TIMESERIES(
-        p$fiscal_transfer_share * as.numeric(nyts), START = c(sy, sq), FREQ = 4)
-    }
-    # Base transfers level the debt-stabilising rule (fiscal_rule) adjusts from.
-    if (is.null(database[["NTRANSFERS_BASE"]])) {
-      database[["NTRANSFERS_BASE"]] <- database[["NTRANSFERS"]]
-    }
-    # Until real GFS revenue is wired (M1), auto-calibrate the effective rates
-    # so the budget balances to the target at the base, keeping the demo debt
-    # path bounded and plausible. Rescaling the ETR *series* keeps the model
-    # identity and the seed mutually consistent.
-    database <- .calibrate_fiscal_rates(database, p)
-    ser <- .compute_fiscal_series(database, p)
-    for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
-  }
-
+  # income_side seeds GOS / TAX_PROD_NET before fiscal, because the reconciled
+  # fiscal mode uses GOS as the corporate-tax base.
   if ("income_side" %in% features) {
     # GMI and TAX_PROD_NET: real ABS series when present (M1 catalogue), else
     # share-of-GDP proxies so the block works on the fixture too.
@@ -415,7 +448,93 @@ seed_feature_data <- function(database, features = character(0),
     for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
+  if ("fiscal_accounting" %in% features) {
+    if (identical(p$fiscal_mode, "reconciled")) {
+      database <- .seed_fiscal_reconciled(database, p)
+    } else {
+      database <- ensure_exog(database, "ETR_DIRECT",   p$fiscal_etr_direct)
+      database <- ensure_exog(database, "ETR_INDIRECT", 0.10)
+      database <- ensure_exog(database, "ETR_CORP",     0.05)
+      database <- ensure_exog(database, "IIRG",         p$fiscal_iirg)
+      if (is.null(database[["NTRANSFERS"]])) {  # transfers proportional to GDP
+        nyts <- stats::as.ts(database[["NY"]])
+        tsp  <- stats::tsp(nyts)
+        sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
+        database[["NTRANSFERS"]] <- bimets::TIMESERIES(
+          p$fiscal_transfer_share * as.numeric(nyts), START = c(sy, sq), FREQ = 4)
+      }
+      # Base transfers level the debt-stabilising rule (fiscal_rule) adjusts from.
+      if (is.null(database[["NTRANSFERS_BASE"]])) {
+        database[["NTRANSFERS_BASE"]] <- database[["NTRANSFERS"]]
+      }
+      # Until real GFS revenue is wired, auto-calibrate the effective rates so
+      # the budget balances to the target at the base, keeping the demo debt
+      # path bounded and plausible.
+      database <- .calibrate_fiscal_rates(database, p)
+      ser <- .compute_fiscal_series(database, p)
+      for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
+    }
+  }
+
   database
+}
+
+# I-2 reconciled fiscal seeding: requires the real ABS income-account series
+# (NGREV/NGEXP/NGINT, M1 catalogue) plus income_side (GOS, TAX_PROD_NET).
+.seed_fiscal_reconciled <- function(db, p) {
+  need <- c("NGREV", "NGEXP", "NGINT", "NHDY", "GOS", "TAX_PROD_NET", "NY")
+  miss <- need[vapply(need, function(n) is.null(db[[n]]), logical(1))]
+  if (length(miss)) {
+    stop("fiscal_mode='reconciled' needs real fiscal data + income_side; missing: ",
+         paste(miss, collapse = ", "), call. = FALSE)
+  }
+  if (is.null(db[["ETR_DIRECT"]])) db <- .seed_const(db, "ETR_DIRECT", p$fiscal_etr_income)
+  if (is.null(db[["ETR_GOS"]]))    db <- .seed_const(db, "ETR_GOS",    p$fiscal_etr_gos)
+  if (is.null(db[["IIRG"]]))       db <- .seed_const(db, "IIRG",       p$fiscal_iirg)
+  if (is.null(db[["NTRANSFERS"]]))
+    db <- .seed_proportional(db, "NTRANSFERS", p$fiscal_transfer_share)
+  if (is.null(db[["NTRANSFERS_BASE"]])) db[["NTRANSFERS_BASE"]] <- db[["NTRANSFERS"]]
+  ser <- .compute_fiscal_series_reconciled(db, p)
+  for (nm in names(ser)) if (is.null(db[[nm]])) db[[nm]] <- ser[[nm]]
+  db
+}
+
+# Reconciled fiscal series, income-account basis. NGEXP_OTHER is defined against
+# the MODELLED interest so NSPEND collapses to actual NGEXP in history; NREV_OTHER
+# plugs the modelled taxes to actual NGREV. Hence NLEND = NGREV - NGEXP (the
+# realised balance) in history, while the components stay endogenous forward.
+.compute_fiscal_series_reconciled <- function(db, p) {
+  a <- .align_db(db, c("NY", "NHDY", "GOS", "TAX_PROD_NET", "NTRANSFERS",
+                       "NG", "NGREV", "NGEXP", "NGINT", "ETR_DIRECT", "ETR_GOS"))
+  m <- a$mat; n <- nrow(m)
+  intg   <- m[, "NGINT"]                              # actual interest (exogenous)
+  nrev_other  <- m[, "NGREV"] - m[, "ETR_DIRECT"] * m[, "NHDY"] -
+                 m[, "ETR_GOS"] * m[, "GOS"] - m[, "TAX_PROD_NET"]
+  ngexp_other <- m[, "NGEXP"] - m[, "NTRANSFERS"] - intg   # income-payable residual
+  nrev   <- m[, "ETR_DIRECT"] * m[, "NHDY"] + m[, "ETR_GOS"] * m[, "GOS"] +
+            m[, "TAX_PROD_NET"] + nrev_other         # = NGREV
+  nspend <- m[, "NG"] + m[, "NTRANSFERS"] + intg + ngexp_other  # = NG + NGEXP (total outlays)
+  nlend  <- nrev - nspend                            # = NGREV - NG - NGEXP (realised balance)
+  # Seed the debt history at the target ratio (no clean quarterly govt-debt
+  # series wired); the model accumulates BG = BG(-1) - NLEND over the solve
+  # window from this realistic jump-off. Interest is the actual series (does not
+  # compound the debt), so the path stays bounded and history-shaped.
+  bg <- p$fiscal_bg_target / 100 * 4 * m[, "NY"]
+  mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
+  list(NREV_OTHER = mk(nrev_other), NGEXP_OTHER = mk(ngexp_other),
+       NREV = mk(nrev), INTG = mk(intg), NSPEND = mk(nspend),
+       NLEND = mk(nlend), BG = mk(bg),
+       BG_GDP = mk(bg / (4 * m[, "NY"]) * 100), DEF_GDP = mk(-nlend / m[, "NY"] * 100))
+}
+
+# Seed `nm` as a constant value over NY's span.
+.seed_const <- function(db, nm, value) {
+  nyts <- stats::as.ts(db[["NY"]])
+  tsp  <- stats::tsp(nyts)
+  sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
+  db[[nm]] <- bimets::TIMESERIES(rep(value, length(as.numeric(nyts))),
+                                 START = c(sy, sq), FREQ = 4)
+  db
 }
 
 # Seed `nm` as a constant share of nominal GDP over NY's span.
@@ -524,14 +643,14 @@ seed_feature_data <- function(database, features = character(0),
   # a tiny early imbalance compounds at the interest rate into an astronomical
   # jump-off. The model enforces BG = BG(-1) - NLEND over the solve window from
   # this sensible seed; over a short horizon the no-rule path stays bounded.
-  bg   <- p$fiscal_bg_target / 100 * m[, "NY"]
+  bg   <- p$fiscal_bg_target / 100 * 4 * m[, "NY"]
   bg_lag <- c(bg[1], bg[-n])
-  intg <- m[, "IIRG"] / 100 * bg_lag
+  intg <- m[, "IIRG"] / 400 * bg_lag
   nlend <- nrev - nspend - intg
   mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
   list(NREV = mk(nrev), NSPEND = mk(nspend), INTG = mk(intg),
        NLEND = mk(nlend), BG = mk(bg),
-       BG_GDP = mk(bg / m[, "NY"] * 100),
+       BG_GDP = mk(bg / (4 * m[, "NY"]) * 100),
        DEF_GDP = mk(-nlend / m[, "NY"] * 100))
 }
 
