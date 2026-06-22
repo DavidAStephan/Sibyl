@@ -105,6 +105,10 @@ load_martin <- function(database,
     model_lines <- rewrite_tsrange_end(model_lines, estimation_end)
   }
   if (length(features)) {
+    # Seed any series the features introduce (idempotent: only adds what is
+    # missing), so load_martin(features=) works standalone, not only via
+    # solve_martin().
+    database <- seed_feature_data(database, features, feature_params)
     model_lines <- apply_model_features(model_lines, features, feature_params)
   }
   model_text <- paste(model_lines, collapse = "\n")
