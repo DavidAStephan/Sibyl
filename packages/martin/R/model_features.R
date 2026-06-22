@@ -52,8 +52,9 @@ feature_defaults <- function() {
     # supply it for output_gap).
     ces_theta_k = 0.38,
     ces_gamma   = NA_real_,
-    # Debt-elastic FX premium (per cent of GDP units on NFL_GDP).
-    fx_phi  = 0.03,
+    # Debt-elastic FX premium: semi-elasticity applied (scaled by 1/100 and the
+    # RTWI error-correction speed) to the NFL_GDP gap, inside the EC target.
+    fx_phi  = 0.1,
     fx_norm = 50,
     # Debt-stabilising fiscal rule.
     fiscal_rho1     = 0.10,
@@ -218,10 +219,14 @@ feature_new_vars <- function(features) {
 # --- swap-based features ----------------------------------------------------
 
 .feature_fx_premium <- function(text, p) {
+  # Inject the debt-elastic premium INSIDE the RTWI error-correction target (the
+  # bracket scaled by -0.218928), so a higher net-foreign-liability ratio raises
+  # the deviation from fair value and the real exchange rate mean-reverts to a
+  # lower (depreciated) level -- gradual and bounded, not a raw dlog kick.
   .swap_once(
     text,
-    "- 5  / 100  * TSDELTA(WR2SP,1) )",
-    sprintf("- 5  / 100  * TSDELTA(WR2SP,1)  - %.10g*(TSLAG(NFL_GDP,1) - %.10g) )",
+    "- -0.5236049854787135))",
+    sprintf("- -0.5236049854787135) + %.10g/100*(TSLAG(NFL_GDP,1) - %.10g))",
             p$fx_phi, p$fx_norm)
   )
 }
@@ -235,14 +240,17 @@ feature_new_vars <- function(features) {
 }
 
 .feature_fiscal_rule <- function(text, p) {
-  # Replace the exogenous ETR_DIRECT input with a debt-stabilising identity.
-  # Inserted as an identity just after the fiscal block's NREV definition.
+  # Debt-stabilising rule on transfers (the spending instrument): when debt is
+  # above target, transfers are cut, lifting net lending and pulling debt back.
+  # Acting on transfers (not the tax rate) keeps the revenue calibration intact
+  # and preserves all the budget identities. Requires fiscal_accounting (which
+  # seeds NTRANSFERS_BASE and computes BG_GDP).
   rule <- paste0(
-    "\nCOMMENT> SIBYL fiscal_rule: debt-stabilising effective household tax rate\n",
-    "IDENTITY> ETR_DIRECT\n",
-    sprintf(paste0("EQ> ETR_DIRECT = %.10g + %.10g*(TSLAG(BG_GDP,1) - %.10g) ",
-                   "+ %.10g*TSDELTA(TSLAG(BG_GDP,1),1)\n"),
-            p$fiscal_etr_direct, p$fiscal_rho1, p$fiscal_bg_target, p$fiscal_rho2)
+    "\nCOMMENT> SIBYL fiscal_rule: debt-stabilising transfers\n",
+    "IDENTITY> NTRANSFERS\n",
+    sprintf(paste0("EQ> NTRANSFERS = NTRANSFERS_BASE - ( %.10g*(TSLAG(BG_GDP,1) - %.10g) ",
+                   "+ %.10g*TSDELTA(TSLAG(BG_GDP,1),1) )*NY/100\n"),
+            p$fiscal_rho1, p$fiscal_bg_target, p$fiscal_rho2)
   )
   .swap_once(text, "COMMENT> SIBYL fiscal_accounting: government budget + debt accounting",
              paste0(rule, "\nCOMMENT> SIBYL fiscal_accounting: government budget + debt accounting"))
@@ -350,6 +358,10 @@ seed_feature_data <- function(database, features = character(0),
       sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
       database[["NTRANSFERS"]] <- bimets::TIMESERIES(
         p$fiscal_transfer_share * as.numeric(nyts), START = c(sy, sq), FREQ = 4)
+    }
+    # Base transfers level the debt-stabilising rule (fiscal_rule) adjusts from.
+    if (is.null(database[["NTRANSFERS_BASE"]])) {
+      database[["NTRANSFERS_BASE"]] <- database[["NTRANSFERS"]]
     }
     # Until real GFS revenue is wired (M1), auto-calibrate the effective rates
     # so the budget balances to the target at the base, keeping the demo debt
