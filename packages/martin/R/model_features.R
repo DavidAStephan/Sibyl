@@ -60,6 +60,9 @@ feature_defaults <- function() {
     fiscal_rho2     = 0.10,
     fiscal_bg_target = 30,
     fiscal_etr_direct = 0.16,
+    fiscal_transfer_share = 0.11,  # transfers as a share of GDP (proxy)
+    fiscal_iirg     = 4,           # implicit interest rate on govt debt (%)
+    fiscal_def_target = 0.0,       # target primary balance / GDP for calibration
     # External accounting.
     nfl_seed = NA_real_
   )
@@ -332,37 +335,125 @@ seed_feature_data <- function(database, features = character(0),
   if ("external_accounting" %in% features) {
     database <- ensure_exog(database, "NFOY", 0)
     database <- ensure_exog(database, "NTRF", 0)
-    for (nm in c("NTB", "TB_GDP", "NCA", "NFL_GDP", "CAD_GDP")) {
-      if (is.null(database[[nm]])) database[[nm]] <- na_series()
-    }
-    # VNFL is lagged: needs a real seed path. Default: a constant seed at the
-    # supplied level (per cent of GDP -> nominal via NY) if absent.
-    if (is.null(database[["VNFL"]])) {
-      ny <- database[["NY"]]
-      seed_level <- if (!is.na(p$nfl_seed)) p$nfl_seed else 0
-      vnfl0 <- if (!is.null(ny)) seed_level/100 * as.numeric(ny) else rep(seed_level, span$n)
-      database[["VNFL"]] <- bimets::TIMESERIES(vnfl0, START = span$start, FREQ = 4)
-    }
+    ser <- .compute_external_series(database, p)
+    for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
   if ("fiscal_accounting" %in% features) {
     database <- ensure_exog(database, "ETR_DIRECT",   p$fiscal_etr_direct)
     database <- ensure_exog(database, "ETR_INDIRECT", 0.10)
     database <- ensure_exog(database, "ETR_CORP",     0.05)
-    database <- ensure_exog(database, "NTRANSFERS",   0)
-    database <- ensure_exog(database, "IIRG",         3)
-    for (nm in c("NREV", "NSPEND", "INTG", "NLEND", "BG_GDP", "DEF_GDP")) {
-      if (is.null(database[[nm]])) database[[nm]] <- na_series()
+    database <- ensure_exog(database, "IIRG",         p$fiscal_iirg)
+    if (is.null(database[["NTRANSFERS"]])) {  # transfers proportional to GDP
+      nyts <- stats::as.ts(database[["NY"]])
+      tsp  <- stats::tsp(nyts)
+      sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
+      database[["NTRANSFERS"]] <- bimets::TIMESERIES(
+        p$fiscal_transfer_share * as.numeric(nyts), START = c(sy, sq), FREQ = 4)
     }
-    if (is.null(database[["BG"]])) {  # lagged stock: seed at target % of GDP
-      ny <- database[["NY"]]
-      bg0 <- if (!is.null(ny)) p$fiscal_bg_target/100 * as.numeric(ny)
-             else rep(0, span$n)
-      database[["BG"]] <- bimets::TIMESERIES(bg0, START = span$start, FREQ = 4)
-    }
+    # Until real GFS revenue is wired (M1), auto-calibrate the effective rates
+    # so the budget balances to the target at the base, keeping the demo debt
+    # path bounded and plausible. Rescaling the ETR *series* keeps the model
+    # identity and the seed mutually consistent.
+    database <- .calibrate_fiscal_rates(database, p)
+    ser <- .compute_fiscal_series(database, p)
+    for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
   database
+}
+
+# Align named db series on their common window; returns matrix + start/length.
+.align_db <- function(db, names) {
+  tss <- lapply(names, function(n) {
+    if (is.null(db[[n]])) stop("series '", n, "' not in database", call. = FALSE)
+    stats::as.ts(db[[n]])
+  })
+  lo <- max(vapply(tss, function(x) stats::tsp(x)[1], 0))
+  hi <- min(vapply(tss, function(x) stats::tsp(x)[2], 0))
+  mat <- do.call(cbind, lapply(tss, function(x)
+    as.numeric(stats::window(x, start = lo, end = hi))))
+  colnames(mat) <- names
+  sy <- floor(lo + 1e-9); sq <- round((lo - sy) * 4 + 1)
+  list(mat = mat, start = c(sy, sq))
+}
+
+# Current account + net-foreign-liability stock, computed historically so
+# bimets has defined initialisation values.
+.compute_external_series <- function(db, p) {
+  a <- .align_db(db, c("NX", "NM", "NY", "NFOY", "NTRF"))
+  m <- a$mat; n <- nrow(m)
+  ntb <- m[, "NX"] - m[, "NM"]
+  nca <- ntb + m[, "NFOY"] + m[, "NTRF"]
+  # The stock recursion must stay finite from the first usable period; treat a
+  # missing flow as zero (no accumulation) so an early NA doesn't poison the
+  # whole path, and seed off the first finite GDP.
+  nca_acc <- ifelse(is.finite(nca), nca, 0)
+  ny1 <- m[which(is.finite(m[, "NY"]))[1], "NY"]
+  seed <- if (!is.na(p$nfl_seed)) p$nfl_seed else 0
+  vnfl <- numeric(n)
+  vnfl[1] <- seed / 100 * (if (is.finite(m[1, "NY"])) m[1, "NY"] else ny1)
+  for (t in seq_len(n)[-1]) vnfl[t] <- vnfl[t - 1] - nca_acc[t]
+  mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
+  list(NTB = mk(ntb), TB_GDP = mk(ntb / m[, "NY"] * 100),
+       NCA = mk(nca), VNFL = mk(vnfl),
+       NFL_GDP = mk(vnfl / m[, "NY"] * 100),
+       CAD_GDP = mk(-nca / m[, "NY"] * 100))
+}
+
+# Scale the effective tax-rate series so that, over the last 5 years of finite
+# data, mean revenue = mean(spending + target primary deficit). A placeholder
+# for true calibration against ABS GFS revenue (M1).
+.calibrate_fiscal_rates <- function(db, p) {
+  a <- .align_db(db, c("NY", "NHDY", "NC", "NHCOE", "NG",
+                       "ETR_DIRECT", "ETR_INDIRECT", "ETR_CORP", "NTRANSFERS"))
+  m <- a$mat; n <- nrow(m)
+  nrev_raw <- m[, "ETR_DIRECT"] * m[, "NHDY"] +
+              m[, "ETR_INDIRECT"] * m[, "NC"] +
+              m[, "ETR_CORP"] * (m[, "NY"] - m[, "NHCOE"])
+  nspend   <- m[, "NG"] + m[, "NTRANSFERS"]
+  # Revenue should cover spending PLUS the interest on the target debt, so that
+  # at the target debt the primary balance is ~0 and the (open-loop, unstable)
+  # debt recursion stays near the seed over the demo window. Calibrate over the
+  # whole finite history. (A debt-stabilising rule -- fiscal_rule, M4 -- is what
+  # genuinely pins the path; this just keeps the no-rule demo bounded.)
+  ss_interest <- (p$fiscal_iirg / 100) * (p$fiscal_bg_target / 100) * m[, "NY"]
+  target   <- nspend + ss_interest + p$fiscal_def_target * m[, "NY"]
+  ok <- is.finite(nrev_raw) & is.finite(target) & nrev_raw > 0
+  scale <- if (any(ok)) sum(target[ok]) / sum(nrev_raw[ok]) else 1
+  for (nm in c("ETR_DIRECT", "ETR_INDIRECT", "ETR_CORP")) {
+    ts  <- stats::as.ts(db[[nm]])
+    tsp <- stats::tsp(ts)
+    sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
+    db[[nm]] <- bimets::TIMESERIES(as.numeric(ts) * scale, START = c(sy, sq), FREQ = 4)
+  }
+  db
+}
+
+# Government revenue/spending/debt, computed historically (recursive debt).
+.compute_fiscal_series <- function(db, p) {
+  a <- .align_db(db, c("NY", "NHDY", "NC", "NHCOE", "NG",
+                       "ETR_DIRECT", "ETR_INDIRECT", "ETR_CORP",
+                       "NTRANSFERS", "IIRG"))
+  m <- a$mat; n <- nrow(m)
+  nrev   <- m[, "ETR_DIRECT"] * m[, "NHDY"] +
+            m[, "ETR_INDIRECT"] * m[, "NC"] +
+            m[, "ETR_CORP"] * (m[, "NY"] - m[, "NHCOE"])
+  nspend <- m[, "NG"] + m[, "NTRANSFERS"]
+  # Seed the *history* of the debt stock at the target ratio rather than
+  # accumulating the (open-loop unstable) recursion over 60 years -- otherwise
+  # a tiny early imbalance compounds at the interest rate into an astronomical
+  # jump-off. The model enforces BG = BG(-1) - NLEND over the solve window from
+  # this sensible seed; over a short horizon the no-rule path stays bounded.
+  bg   <- p$fiscal_bg_target / 100 * m[, "NY"]
+  bg_lag <- c(bg[1], bg[-n])
+  intg <- m[, "IIRG"] / 100 * bg_lag
+  nlend <- nrev - nspend - intg
+  mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
+  list(NREV = mk(nrev), NSPEND = mk(nspend), INTG = mk(intg),
+       NLEND = mk(nlend), BG = mk(bg),
+       BG_GDP = mk(bg / m[, "NY"] * 100),
+       DEF_GDP = mk(-nlend / m[, "NY"] * 100))
 }
 
 # Compute the CES output-gap block historically (harmonic form, sigma=0.5) on
