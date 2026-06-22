@@ -45,6 +45,11 @@ Adds the corporate-leverage identity \code{LEV} (debt-to-annual-GDP, from ABS
 \code{DCORP} A3427913W or a proxy) and re-estimates the business spread \code{NBRSP}
 with a lagged-leverage term, so a more-indebted corporate sector widens the
 external-finance premium (review F1/F5/SF4). Off by default.}
+\item{\code{endogenous_household}}{(I-2 Phase 2, T3) Replaces the \code{NHOY} ECM with
+an identity rebuilt from its components, with household income tax
+responding to primary income (\code{NHTAX_EN}) and transfers to unemployment
+(\code{NTRANSFERS_EN}) -- automatic stabilisers that flow into consumption \code{RC}.
+Needs \code{household_income}. Opt-in (re-baselines \code{RC}).}
 \item{\code{fx_premium}}{(T2) Debt-elastic exchange-rate risk premium: adds a
 \code{NFL_GDP} term to the \code{RTWI} equation. Needs \code{external_accounting}.}
 \item{\code{fiscal_rule}}{(T2) Debt-stabilising fiscal rule on the effective

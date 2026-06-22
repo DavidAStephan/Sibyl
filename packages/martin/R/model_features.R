@@ -40,6 +40,11 @@
 #'     `DCORP` A3427913W or a proxy) and re-estimates the business spread `NBRSP`
 #'     with a lagged-leverage term, so a more-indebted corporate sector widens the
 #'     external-finance premium (review F1/F5/SF4). Off by default.}
+#'   \item{`endogenous_household`}{(I-2 Phase 2, T3) Replaces the `NHOY` ECM with
+#'     an identity rebuilt from its components, with household income tax
+#'     responding to primary income (`NHTAX_EN`) and transfers to unemployment
+#'     (`NTRANSFERS_EN`) -- automatic stabilisers that flow into consumption `RC`.
+#'     Needs `household_income`. Opt-in (re-baselines `RC`).}
 #'   \item{`fx_premium`}{(T2) Debt-elastic exchange-rate risk premium: adds a
 #'     `NFL_GDP` term to the `RTWI` equation. Needs `external_accounting`.}
 #'   \item{`fiscal_rule`}{(T2) Debt-stabilising fiscal rule on the effective
@@ -59,7 +64,8 @@ NULL
 .MARTIN_FEATURES <- c(
   "output_gap", "external_accounting", "fiscal_accounting", "income_side",
   "household_income", "corporate_accelerator",
-  "fx_premium", "fiscal_rule", "convex_ptm", "inverted_le"
+  "fx_premium", "fiscal_rule", "convex_ptm", "inverted_le",
+  "endogenous_household"
 )
 
 #' Default calibration constants for the optional features
@@ -103,7 +109,18 @@ feature_defaults <- function() {
     hh_tax_share     = 0.13,
     # Corporate accelerator (I-3): proxy corporate-debt share of GDP when the
     # real ABS series (DCORP) is absent.
-    corp_debt_share  = 0.45
+    corp_debt_share  = 0.45,
+    # Corporate sector (I-1/I-3): corporate share of GOS; retained-earnings
+    # share of corporate GOS (after interest/dividends/tax) for net worth;
+    # corporate net worth seeded at this multiple of annual GDP.
+    corp_gos_share   = 0.75,
+    corp_retain_share = 0.30,
+    corp_nw_mult     = 2.0,
+    # Endogenous household income (I-2 Phase 2): unemployment-benefit
+    # sensitivity (per cent of GDP per pp of LUR above normal) and the normal
+    # unemployment rate the transfer rule centres on.
+    hh_trans_unemp   = 0.30,
+    hh_lur_norm      = 5.0
   )
 }
 
@@ -116,15 +133,18 @@ feature_new_vars <- function(features) {
   if ("output_gap" %in% features)
     v <- c(v, "KSTAR", "NSTAR", "YSTAR", "YGAP", "LESTAR")
   if ("external_accounting" %in% features)
-    v <- c(v, "NTB", "TB_GDP", "NCA", "VNFL", "NFL_GDP", "CAD_GDP")
+    v <- c(v, "NTB", "TB_GDP", "NCA", "VNFL", "NFL_GDP", "CAD_GDP",
+           "GNI", "GNI_GDP_WEDGE")
   if ("fiscal_accounting" %in% features)
     v <- c(v, "NREV", "NSPEND", "NLEND", "INTG", "BG", "BG_GDP", "DEF_GDP")
   if ("income_side" %in% features)
-    v <- c(v, "GOS", "PROFIT_SHARE", "LABOUR_SHARE")
+    v <- c(v, "GOS", "PROFIT_SHARE", "LABOUR_SHARE", "GOS_CORP")
   if ("household_income" %in% features)
     v <- c(v, "HH_NONLAB", "NHOY_RESID", "NHDY_RECON", "HH_TAXRATE")
   if ("corporate_accelerator" %in% features)
-    v <- c(v, "LEV")
+    v <- c(v, "LEV", "RET_EARN", "VCORP", "LEV_DE")
+  if ("endogenous_household" %in% features)
+    v <- c(v, "NHTAX_EN", "NTRANSFERS_EN")
   unique(v)
 }
 
@@ -219,6 +239,14 @@ feature_new_vars <- function(features) {
     "COMMENT> CAD_GDP  current account deficit, per cent of GDP",
     "IDENTITY> CAD_GDP",
     "EQ> CAD_GDP = -NCA / NY * 100",
+    "",
+    "COMMENT> GNI  gross national income = GDP + net foreign primary income (I-1)",
+    "IDENTITY> GNI",
+    "EQ> GNI = NY + NFOY",
+    "",
+    "COMMENT> GNI_GDP_WEDGE  GDP-GNI gap, per cent (net foreign primary income / GDP)",
+    "IDENTITY> GNI_GDP_WEDGE",
+    "EQ> GNI_GDP_WEDGE = NFOY / NY * 100",
     ""
   )
 }
@@ -276,6 +304,10 @@ feature_new_vars <- function(features) {
     "COMMENT> LABOUR_SHARE  compensation of employees, per cent of GDP (= NHWS*100)",
     "IDENTITY> LABOUR_SHARE",
     "EQ> LABOUR_SHARE = NHCOE / NY * 100",
+    "",
+    "COMMENT> GOS_CORP  corporate share of gross operating surplus (excl. dwellings/govt)",
+    "IDENTITY> GOS_CORP",
+    sprintf("EQ> GOS_CORP = %.10g * GOS", p$corp_gos_share),
     ""
   )
 }
@@ -358,10 +390,22 @@ feature_new_vars <- function(features) {
 # purely cyclical LURGAP proxy with a genuine leverage channel.
 .block_corporate <- function(p) {
   c(
-    "COMMENT> SIBYL corporate_accelerator (I-3): corporate leverage",
-    "COMMENT> LEV  corporate debt, per cent of annual GDP",
+    "COMMENT> SIBYL corporate_accelerator (I-3): corporate balance sheet + leverage",
+    "COMMENT> LEV  corporate debt, per cent of annual GDP (the accelerator input)",
     "IDENTITY> LEV",
     "EQ> LEV = DCORP / (4*NY) * 100",
+    "",
+    "COMMENT> RET_EARN  corporate retained earnings (saving) = retain share of corporate GOS",
+    "IDENTITY> RET_EARN",
+    sprintf("EQ> RET_EARN = %.10g * GOS_CORP", p$corp_retain_share),
+    "",
+    "COMMENT> VCORP  corporate net worth (accumulated retained earnings from a seed)",
+    "IDENTITY> VCORP",
+    "EQ> VCORP = TSLAG(VCORP,1) + RET_EARN",
+    "",
+    "COMMENT> LEV_DE  corporate gearing: debt-to-net-worth, per cent",
+    "IDENTITY> LEV_DE",
+    "EQ> LEV_DE = DCORP / VCORP * 100",
     ""
   )
 }
@@ -374,6 +418,43 @@ feature_new_vars <- function(features) {
     "EQ> NBRSP = c1 + c2*TSLAG(NBRSP,1) + c3*LURGAP\nCOEFF> c1 c2 c3",
     "EQ> NBRSP = c1 + c2*TSLAG(NBRSP,1) + c3*LURGAP + c4*TSLAG(LEV,1)\nCOEFF> c1 c2 c3 c4"
   )
+}
+
+# I-2 Phase 2: automatic stabilisers in household income. NHTAX_EN responds to
+# primary income, NTRANSFERS_EN to unemployment, and NHOY is rebuilt from its
+# components (so household disposable income -- hence consumption RC -- carries
+# fiscal stabilisers). Opt-in: it replaces the NHOY ECM with an identity.
+.block_endogenous_household <- function(p) {
+  c(
+    "COMMENT> SIBYL endogenous_household (I-2 Phase 2): household automatic stabilisers",
+    "COMMENT> NHTAX_EN  household income tax = effective rate x primary income",
+    "IDENTITY> NHTAX_EN",
+    "EQ> NHTAX_EN = ETR_HH/100 * HH_PRIMARY",
+    "",
+    "COMMENT> NTRANSFERS_EN  transfers rising with unemployment above the norm",
+    "IDENTITY> NTRANSFERS_EN",
+    sprintf("EQ> NTRANSFERS_EN = NTRANSFERS + %.10g*(LUR - %.10g)*NY/100",
+            p$hh_trans_unemp, p$hh_lur_norm),
+    ""
+  )
+}
+
+# Replace the NHOY behavioural block with an identity rebuilt from its
+# income-account components (line-based, to avoid whitespace fragility).
+.feature_endogenous_household <- function(text, p) {
+  lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
+  i0 <- which(lines == "BEHAVIORAL> NHOY")
+  if (length(i0) != 1L)
+    stop("endogenous_household: NHOY behavioral not found uniquely", call. = FALSE)
+  win <- lines[(i0 + 1):min(i0 + 8, length(lines))]
+  rel <- which(win == "RESTRICT>c4=1")[1]
+  if (is.na(rel))
+    stop("endogenous_household: NHOY block end not found", call. = FALSE)
+  i1 <- i0 + rel
+  repl <- c("IDENTITY> NHOY",
+            "EQ> NHOY = HH_NONLAB - NHTAX_EN + NTRANSFERS_EN + NHOY_RESID")
+  paste(c(lines[seq_len(i0 - 1)], repl, lines[(i1 + 1):length(lines)]),
+        collapse = "\n")
 }
 
 # --- swap-based features ----------------------------------------------------
@@ -447,6 +528,8 @@ apply_model_features <- function(lines, features = character(0),
     blocks <- c(blocks, .block_household_income(p))
   if ("corporate_accelerator" %in% features)
     blocks <- c(blocks, .block_corporate(p))
+  if ("endogenous_household" %in% features)
+    blocks <- c(blocks, .block_endogenous_household(p))
   if (length(blocks)) lines <- .insert_blocks_before_end(lines, blocks)
 
   # 2. text swaps (operate on the full text, incl. inserted blocks)
@@ -458,6 +541,8 @@ apply_model_features <- function(lines, features = character(0),
   if ("inverted_le" %in% features)  text <- .feature_inverted_le(text, p)
   if ("corporate_accelerator" %in% features)
     text <- .feature_corporate_accelerator(text, p)
+  if ("endogenous_household" %in% features)
+    text <- .feature_endogenous_household(text, p)
 
   strsplit(text, "\n", fixed = TRUE)[[1]]
 }
@@ -539,15 +624,35 @@ seed_feature_data <- function(database, features = character(0),
     for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
+  if ("endogenous_household" %in% features) {
+    need <- c("HH_PRIMARY", "NHTAX", "NTRANSFERS", "HH_NONLAB", "NHOY_RESID", "LUR", "NY")
+    miss <- need[vapply(need, function(n) is.null(database[[n]]), logical(1))]
+    if (length(miss)) {
+      stop("endogenous_household needs household_income; missing: ",
+           paste(miss, collapse = ", "), call. = FALSE)
+    }
+    # Effective household tax rate calibrated to the historical mean, so the
+    # in-sample level matches and the forecast response is to the income base.
+    a <- .align_db(database, c("NHTAX", "HH_PRIMARY"))
+    etr_hh <- mean(a$mat[, "NHTAX"] / a$mat[, "HH_PRIMARY"], na.rm = TRUE) * 100
+    if (is.null(database[["ETR_HH"]])) database <- .seed_const(database, "ETR_HH", etr_hh)
+    b <- .align_db(database, c("HH_PRIMARY", "NTRANSFERS", "LUR", "NY", "ETR_HH"))
+    m <- b$mat
+    mk <- function(v) bimets::TIMESERIES(v, START = b$start, FREQ = 4)
+    if (is.null(database[["NHTAX_EN"]]))
+      database[["NHTAX_EN"]] <- mk(m[, "ETR_HH"] / 100 * m[, "HH_PRIMARY"])
+    if (is.null(database[["NTRANSFERS_EN"]]))
+      database[["NTRANSFERS_EN"]] <- mk(m[, "NTRANSFERS"] +
+        p$hh_trans_unemp * (m[, "LUR"] - p$hh_lur_norm) * m[, "NY"] / 100)
+  }
+
   if ("corporate_accelerator" %in% features) {
     if (is.null(database[["DCORP"]]))
       database <- .seed_proportional(database, "DCORP", p$corp_debt_share)
-    if (is.null(database[["LEV"]])) {
-      a <- .align_db(database, c("DCORP", "NY"))
-      m <- a$mat
-      database[["LEV"]] <- bimets::TIMESERIES(
-        m[, "DCORP"] / (4 * m[, "NY"]) * 100, START = a$start, FREQ = 4)
-    }
+    if (is.null(database[["GOS_CORP"]]))  # proxy if income_side off (~27% of GDP)
+      database <- .seed_proportional(database, "GOS_CORP", 0.27)
+    ser <- .compute_corporate(database, p)
+    for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
   if ("fiscal_accounting" %in% features) {
@@ -648,6 +753,20 @@ seed_feature_data <- function(database, features = character(0),
   db
 }
 
+# Corporate balance sheet + leverage, computed historically. Net worth is seeded
+# at a multiple of annual GDP (the model accumulates VCORP = VCORP(-1) + RET_EARN
+# over the solve window from this jump-off).
+.compute_corporate <- function(db, p) {
+  a <- .align_db(db, c("DCORP", "NY", "GOS_CORP"))
+  m <- a$mat
+  lev      <- m[, "DCORP"] / (4 * m[, "NY"]) * 100
+  ret_earn <- p$corp_retain_share * m[, "GOS_CORP"]
+  vcorp    <- p$corp_nw_mult * 4 * m[, "NY"]
+  mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
+  list(LEV = mk(lev), RET_EARN = mk(ret_earn), VCORP = mk(vcorp),
+       LEV_DE = mk(m[, "DCORP"] / vcorp * 100))
+}
+
 # Household income-account decomposition computed historically.
 .compute_household_income <- function(db, p) {
   a <- .align_db(db, c("NHCOE", "NHOY", "HH_PRIMARY", "NHTAX", "NTRANSFERS"))
@@ -669,7 +788,8 @@ seed_feature_data <- function(database, features = character(0),
   mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
   list(GOS = mk(gos),
        PROFIT_SHARE = mk(gos / m[, "NY"] * 100),
-       LABOUR_SHARE = mk(m[, "NHCOE"] / m[, "NY"] * 100))
+       LABOUR_SHARE = mk(m[, "NHCOE"] / m[, "NY"] * 100),
+       GOS_CORP = mk(p$corp_gos_share * gos))
 }
 
 # Align named db series on their common window; returns matrix + start/length.
@@ -707,7 +827,9 @@ seed_feature_data <- function(database, features = character(0),
   list(NTB = mk(ntb), TB_GDP = mk(ntb / m[, "NY"] * 100),
        NCA = mk(nca), VNFL = mk(vnfl),
        NFL_GDP = mk(vnfl / m[, "NY"] * 100),
-       CAD_GDP = mk(-nca / m[, "NY"] * 100))
+       CAD_GDP = mk(-nca / m[, "NY"] * 100),
+       GNI = mk(m[, "NY"] + m[, "NFOY"]),
+       GNI_GDP_WEDGE = mk(m[, "NFOY"] / m[, "NY"] * 100))
 }
 
 # Scale the effective tax-rate series so that, over the last 5 years of finite
