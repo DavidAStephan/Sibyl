@@ -19,6 +19,48 @@ design principles below are binding.
 
 ---
 
+## Implementation status (built)
+
+All milestones M0–M5 are implemented as an opt-in **model-feature** mechanism
+([packages/martin/R/model_features.R](../packages/martin/R/model_features.R)):
+load-time transforms of the bimets model text plus the data seeding bimets
+requires, threaded through `load_martin(features=, feature_params=)` and
+`solve_martin(...)`. **With no features the model and solve are byte-for-byte
+unchanged**, so the frozen no-adjustment baseline stays bit-identical to the
+bimets reference (regression test 35/35). Full suite: **786 pass, 0 fail**.
+
+| Feature | Milestone | Tier | Status on the fixture |
+|---|---|---|---|
+| `output_gap` | M2 | T0 (diagnostic) | CES inverted EMMA-style. `YGAP` in [-1.6,+0.4]%, `LESTAR` tracks `LE` within ~1%. Baseline-neutral. `sibyldata::ces_calibration()` + `fit_efficiency_trend()`. |
+| `external_accounting` | M3 | T0 | `CAD_GDP` [-4.1,+2.9]%, `NFL_GDP` [46,77]%. Identities exact, baseline-neutral. |
+| `fiscal_accounting` | M3 | T0 | `BG_GDP` [7,32]%, `DEF_GDP` [-2.0,+1.4]%. Identities exact, baseline-neutral. Effective rates auto-calibrated (see below). |
+| `fx_premium` | M4 | T2 (off) | Forecast: higher NFL/GDP depreciates `RTWI` (right sign, bounded), via the EC target. |
+| `fiscal_rule` | M4 | T2 (off) | Forecast: holds `BG_GDP` at [30.3,31.7]% around target via a transfers rule. |
+| `convex_ptm` | M5 | T3 (opt-in) | Swaps `c7*LURGAP` → `c7*(LURGAP/LUR)`, re-estimates PTM. Default keeps the pinned linear fit. |
+| `inverted_le` | M5 | T3 (opt-in) | Retargets `LE` to the inverted-PF employment `LESTAR`, re-estimates. Needs `output_gap`. |
+
+Tests: `test-model-features.R`, `test-production.R`, `test-accounting.R`,
+`test-feedback.R`, `test-respecification.R`.
+
+**Known limitation (M1 data).** The fiscal and external blocks currently seed
+their *inputs* with proxies — `NFOY`/`NTRF`=0, transfers proportional to GDP,
+effective tax rates auto-calibrated so the budget covers spending plus
+steady-state interest, debt history seeded at the target ratio. The accounting
+*structure* is correct and the demo numbers are realistic, but real use needs
+the ABS series in §B.3 wired into the seeding (ABS 5206.0 government income/
+outlay; 5302.0 BoP primary income + IIP). That live-fetch wiring is the
+remaining M1 task; it does not affect the default path or the regression test.
+
+bimets notes discovered during implementation: identities do **not** support
+`@recode` (the `.txt` model uses none — confirming the review's ELB-floor
+finding); every endogenous variable (incl. new identities) must be seeded with
+defined initialisation values (NA fails); the CES is written in the harmonic
+`sigma=0.5` form so no power operator is needed.
+
+---
+
+---
+
 ## 0. Shared constraints and strategy
 
 Everything here is governed by one hard constraint and one taxonomy.
