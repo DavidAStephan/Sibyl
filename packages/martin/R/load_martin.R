@@ -87,7 +87,9 @@ martin_data_fixture <- function() {
 load_martin <- function(database,
                         variant         = c("af", "identity", "est"),
                         estimate        = TRUE,
-                        estimation_end  = NULL) {
+                        estimation_end  = NULL,
+                        features        = character(0),
+                        feature_params  = list()) {
   variant <- match.arg(variant)
   if (!is.list(database) || length(database) == 0L) {
     stop("`database` must be a non-empty named list of bimets TIMESERIES.",
@@ -101,6 +103,9 @@ load_martin <- function(database,
   model_lines <- readLines(model_file_path(variant))
   if (!is.null(estimation_end)) {
     model_lines <- rewrite_tsrange_end(model_lines, estimation_end)
+  }
+  if (length(features)) {
+    model_lines <- apply_model_features(model_lines, features, feature_params)
   }
   model_text <- paste(model_lines, collapse = "\n")
   .suppress_bimets_version_warning({

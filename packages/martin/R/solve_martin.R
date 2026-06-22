@@ -65,6 +65,8 @@ solve_martin <- function(database,
                          exogenize       = character(0),
                          baseline_for_exogenize = NULL,
                          exogenize_range = NULL,
+                         features        = character(0),
+                         feature_params  = list(),
                          sim_convergence = 1e-6,
                          sim_iter_limit  = 100) {
   coefficients <- match.arg(coefficients)
@@ -111,9 +113,14 @@ solve_martin <- function(database,
     )
   }
 
+  if (length(features)) {
+    database <- seed_feature_data(database, features, feature_params)
+  }
+
   model <- load_martin(
     database, variant = "af", estimate = TRUE,
-    estimation_end = if (coefficients == "reestimated") estimation_end else NULL
+    estimation_end = if (coefficients == "reestimated") estimation_end else NULL,
+    features = features, feature_params = feature_params
   )
 
   start <- judgement_parse_quarter(horizon[1])
