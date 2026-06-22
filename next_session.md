@@ -17,34 +17,86 @@ bimets model, adjusted by the LLM judgement layer with a pre-computed
 sensitivity matrix + iterative refinement loop + round-trip audit, and
 rendered as a Quarto report.
 
-> **⚠ Branch state — read first.** The latest session ran a multi-agent
-> evaluation and a **Tier 1-3 improvement build**, validated by a live
-> end-to-end round. It all lives on branch **`improvements/tiers-1-3`**
-> (2 commits, **NOT merged to `main`**). `main` is the pre-evaluation state.
-> Review with `git log main..improvements/tiers-1-3` / `git diff main` and
-> merge when happy. The commits:
-> 1. *Tier 1-3 roadmap* — frozen + human-gated by default, add-factor
->    magnitude/horizon guardrails, honest provenance manifest, sensitivity
->    linearity probe, `solve_martin_stochastic` uncertainty bands,
->    `mechanical_audit`, exogenize round-trip, `renv.lock`, doc truth-up.
-> 2. *Live-round fixes* — reverted the `carry` tail default back to `decay_50`
->    (a `carry` regression drove modelled unemployment negative), and fixed
->    `solve_martin_stochastic` to perturb only the forecast window (it
->    overflowed on `XRE` in-sample).
+> **Everything is on `main` and pushed** (GitHub: DavidAStephan/Sibyl). The old
+> `improvements/tiers-1-3` branch is long since merged. The most recent and
+> largest workstream was a **comparative structural review of MARTIN vs peer
+> models** ([docs/martin_model_review.md](docs/martin_model_review.md)) followed
+> by a **12-feature model-enhancement layer** that implements the review's
+> recommendations and an entire income-side-of-GDP build. **See the new
+> "MARTIN model enhancements" section below — read it before touching
+> `packages/martin/R/model_features.R`.**
 
-Status as of the last commit (`improvements/tiers-1-3`):
+Status as of the latest commit:
 
 | Item | Status |
 |---|---|
-| Test suites | judgement 220 / sibyldata 301 (+4 live-API skip) / nowcast 58 / martin 175 — 754 assertions, 0 fail |
+| Test suites | judgement 212 / sibyldata 293 / nowcast 58 / martin 281 — **844 assertions, 0 fail** (live-API tests skip without keys) |
 | Pipeline `tar_make()` (live, frozen, `SIBYL_APPROVE=1`) | 30/30 targets, ~8m cold; renders `reports/round.html` |
+| Model enhancements | **12 opt-in features** in `martin::load_martin(features=)` / `solve_martin(features=)`, default OFF -> frozen baseline bit-identical. See the dedicated section. |
 | Coefficients | **frozen** by default (`estimation_end = NULL`); re-estimation is an explicit, logged opt-in |
 | Human-approval gate | **ON** by default (`interactive` / `SIBYL_APPROVE=1` token); unattended runs STOP on un-reviewed proposals |
-| Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on the frozen, no-adjustment, in-sample path |
+| Regression test (`solve_martin` vs canonical bimets pipeline) | bit-identical (max \|diff\| = 0) on the frozen, no-adjustment, in-sample path — **unaffected by every feature when off** |
 | Live database vs fixture coverage | every fixture var is populated, but via a mix of source classes — read the provenance manifest (`database_provenance(db)`: `live` / `fixture_fallback` / `vendored_wf1` / `proxy` / `dummy` / `derived`), not a single "100%" headline. Live path supplies ~113 of 205; the rest are dummies/scalars/state-space-wf1/proxy/fixture-fallback. "vintage" is a fetch-date stamp, not point-in-time. |
 | Nowcast handover | bridge_monthly default on growth rates (RC←RT, Y←HOURS, LE←LE); ARIMA fallback for unmapped targets. Committed backtest: bridge MAPE 9.8% / 82% within 5% on the fixture (`packages/nowcast/inst/eval/handover_backtest.md`) |
 | End-to-end LLM round (with `ANTHROPIC_API_KEY`) | Sensitivity matrix → propose (Sonnet 4.6) → solve → describe (Haiku) → audit (Haiku) → refine if disagree, repeat; best-iter selection. `diagnose_audit()` separates translation gaps from inevitable MARTIN endogenous responses. Multi-narrative coherence test confirms distinct equations per narrative. |
 | Round report | renders to `reports/round.html` including "narrative coherence diagnostics" |
+
+---
+
+## MARTIN model enhancements (the big recent workstream)
+
+Driven by [docs/martin_model_review.md](docs/martin_model_review.md) (a
+multi-agent comparative review of MARTIN vs FR-BDF / ECB-BASE / EMMA / AUS-M /
+the RBA DSGE), three planning docs were written and then implemented as **opt-in
+model features**:
+
+- [docs/martin_enhancements_plan.md](docs/martin_enhancements_plan.md) — the
+  original three enhancements (CES output gap, fiscal/external accounting,
+  convex Phillips) and the **4-tier change taxonomy** (T0 reporting / T1 inert /
+  T2 switchable / T3 re-estimated) that keeps the frozen baseline safe.
+- [docs/income_side_scope.md](docs/income_side_scope.md) — the income-side-of-GDP
+  agenda (I-0 GDP(I) primitive → I-1 GNI → I-2 fiscal+household reconciliation →
+  I-3 corporate accelerator), all implemented.
+- [docs/data_refinements.md](docs/data_refinements.md) — honest assessment of the
+  two genuinely external data limitations (no quarterly govt net-debt series;
+  point-in-time vintages need prospective accumulation).
+
+**The mechanism** ([packages/martin/R/model_features.R](packages/martin/R/model_features.R)):
+`load_martin()`/`solve_martin()` take `features=` (character vector) and
+`feature_params=` (calibration list, see `feature_defaults()`). Each feature is
+a load-time transform of the bimets model text **plus** the data seeding bimets
+requires. **With no features the model text and solve are byte-for-byte
+unchanged** — the frozen, no-adjustment baseline stays bit-identical (design
+principle 6). Real ABS series feeding the features are in the catalogue (verified
+live); fixture runs fall back to share-of-GDP proxies, so the regression test and
+all default-path tests are untouched.
+
+| Feature | Tier | What it adds |
+|---|---|---|
+| `output_gap` | T0 diag | CES production fn inverted EMMA-style: `YGAP`, `LESTAR`, potential. Needs `EFF` (sibyldata `fit_efficiency_trend`). |
+| `external_accounting` | T0 | current account + net-foreign-liability stock; `CAD_GDP`, `NFL_GDP`, **`GNI`** (= NY+NFOY) |
+| `fiscal_accounting` | T0/T2 | govt budget+debt; `fiscal_mode="demo"` (bounded) or **`"reconciled"`** (I-2, history-matched balance on real ABS) |
+| `income_side` | T0 | GDP(I): `GOS`, `PROFIT_SHARE`, `LABOUR_SHARE`, `GOS_CORP` |
+| `household_income` | T0 | decompose `NHOY` into income-account parts; `HH_TAXRATE` |
+| `corporate_accelerator` | T3 | BGG accelerator: `NBRSP` loads on corporate leverage `LEV`; + `RET_EARN`/`VCORP`/`LEV_DE` |
+| `endogenous_household` | T3 | makes `NHOY` endogenous w/ automatic stabilisers (re-baselines `RC`) |
+| `fx_premium` | T2 | debt-elastic FX risk premium on `RTWI` |
+| `fiscal_rule` | T2 | debt-stabilising transfers rule |
+| `convex_ptm` | T3 | convex Phillips: `c7*LURGAP` → `c7*(LURGAP/LUR)` |
+| `inverted_le` | T3 | retargets `LE` to the inverted-PF employment |
+
+T0/T1 are baseline-neutral (default-on safe); T2 are off by default; T3
+re-estimate an equation (opt-in). Tests: `test-model-features.R`,
+`test-production.R`, `test-accounting.R`, `test-fiscal-reconciled.R`,
+`test-feedback.R`, `test-respecification.R`, `test-income-side.R`,
+`test-household-income.R`, `test-corporate-accelerator.R`,
+`test-income-extensions.R`. Calibration helpers in
+[packages/sibyldata/R/production.R](packages/sibyldata/R/production.R).
+
+**Not yet done:** features are NOT wired into `_targets.R` / the LLM round yet —
+they are a library surface you opt into per `solve_martin()` call. Enabling a
+chosen set in a live round + report is the natural next step (see "What to pick
+up next").
 
 ---
 
@@ -106,25 +158,33 @@ if Quarto isn't on PATH.
 
 ## What to pick up next
 
-Section 0 is the deck-clearing follow-ups from the Tier 1-3 build; sections
-1-3 are the older, larger bets. Each item is independent.
+Section 0 is the model-enhancement follow-ups; sections 1-3 are the older,
+larger bets. Each item is independent.
 
-### 0. Follow-ups from the Tier 1-3 build (small, well-scoped)
+### 0. Model-enhancement + housekeeping follow-ups
 
-- **Merge `improvements/tiers-1-3` to `main`** once reviewed (see Branch state
-  above), then `targets::tar_destroy()` so the next round rebuilds with the
-  merged code.
-- **Re-run a full live LLM round post-fix.** The last live round predates the
-  `decay_50` revert (it used `carry` + an oversized LUR AF + NCR-exogenize and
-  drove LUR to -0.82%). The fix is validated deterministically; a fresh
-  `SIBYL_APPROVE=1 tar_make()` would reconfirm the headline reads sane and that
-  the `solve_martin_stochastic` bands render in the report.
+- **Enable the features in a live round / report (the obvious next step).** The
+  12 features are a *library surface*, NOT wired into `_targets.R` or the LLM
+  round. Choose a set — e.g. `output_gap` + `external_accounting` + `income_side`
+  + `fiscal_accounting(fiscal_mode="reconciled")` — enable them in the pipeline,
+  surface the new diagnostics (`YGAP`, `GNI`/`CAD_GDP`, `BG_GDP`/`DEF_GDP`,
+  profit/labour share, corporate gearing) in `reports/round.qmd`, and add their
+  rows to the LLM-facing `equation_catalogue.csv` so the judgement layer sees
+  them. Real ABS inputs need live fetches (the catalogue rows exist).
+- **Validate the opt-in (T3) features before trusting forecasts.** `convex_ptm`,
+  `inverted_le`, `corporate_accelerator`, `endogenous_household` re-estimate an
+  equation when on. Re-fit on a post-COVID sample and check out-of-sample fit.
+- **Income-side refinements (smaller).** Corporate accelerator uses a
+  debt-to-GDP leverage proxy from the dominant private-NFC sub-sector (a
+  consolidated debt-to-equity is the refinement); the SF2 net-lending adding-up
+  across all four sectors isn't built; `BG`/`VNFL` level seeds are calibrated
+  proxies — all in [docs/data_refinements.md](docs/data_refinements.md).
+- **Re-run a full live LLM round.** No live round has been run recently. A fresh
+  `SIBYL_APPROVE=1 tar_make()` reconfirms the headline reads sane and the
+  `solve_martin_stochastic` bands render.
 - **`mechanical_audit` is direction-only.** It reported `agrees = TRUE` on a
   -5.53pp overshoot. Add a magnitude / plausibility dimension (e.g. flag when a
   rate leaves [0, 100], or the realised move is > Nx the declared target).
-- **Regenerate `man/*.Rd`.** Only `NAMESPACE` was regenerated for the new
-  exports (`solve_martin_stochastic`, `mechanical_audit`, `database_provenance`,
-  `classify_provenance`); run `devtools::document()` on all four packages.
 - **Break the `martin -> judgement` dependency cleanly.** `martin` now
   `Imports judgement` so `solve_martin` resolves — pragmatic, but it pulls
   `ellmer` into the model layer. Cleanest fix: relocate the pure `adjustment`
@@ -141,9 +201,10 @@ Section 0 is the deck-clearing follow-ups from the Tier 1-3 build; sections
 - **`update_data()` per-source success/failure.** It warns but does not report
   which sources failed; `round_metadata` infers failure from `fixture_fallback`
   provenance. Return an explicit per-source status.
-- **Point-in-time vintage.** "vintage" is still a fetch-date stamp (no
-  `realtime_start/end` to FRED, no ABS/RBA archive lookup), so a past round is
-  not byte-reproducible. `renv.lock` is now committed.
+- **Point-in-time vintage** — assessed in
+  [docs/data_refinements.md](docs/data_refinements.md): a prospective-data task
+  (only FRED/ALFRED has historical archives; ABS/RBA must be snapshotted going
+  forward). The buildable increment now is a vintage-aware FRED fetch.
 - **`.Renviron`:** `FRED_API_KEY` is empty, so live world proxies (WP/WPX/WY/
   POIL/...) fall back to the 2019Q3 fixture. Add a key for a fuller live round.
 - **Dashboard review table** neutralises a row by zeroing its value (no inline
@@ -234,17 +295,19 @@ packages/
 │   │   ├── identities.R         ← apply_ibctr() / apply_ibndr_annual()
 │   │   ├── monthly_indicators.R ← nowcast_monthly_indicators() for bridges
 │   │   ├── state_space.R        ← KFAS ports of PI_E, TLUR, RSTAR + hp_filter
+│   │   ├── production.R         ← ★ CES calibration + efficiency trend (output_gap)
 │   │   ├── extend_exogenous.R   ← future-horizon exogenous extension
 │   │   └── cache.R              ← parquet cache by (source, vintage)
 │   └── inst/extdata/
-│       ├── series_catalogue.csv ← 163 rows / 49 formulas
+│       ├── series_catalogue.csv ← 250 rows (incl. ABS fiscal/external/income feeds)
 │       ├── iad_weights.csv      ← vendored IO-tables IAD weights
 │       └── dummies.csv          ← 41 dummy series definitions
 │
 ├── martin/
 │   ├── R/
-│   │   ├── load_martin.R        ← LOAD / ESTIMATE / TSRANGE rewriter
-│   │   ├── solve_martin.R       ← SIMULATE wrapper + residual decay
+│   │   ├── load_martin.R        ← LOAD / ESTIMATE / TSRANGE rewriter + features=
+│   │   ├── model_features.R     ← ★ the 12 opt-in features (transforms + seeding)
+│   │   ├── solve_martin.R       ← SIMULATE wrapper + residual decay + features=
 │   │   ├── sensitivity_matrix.R ← pre-shock + propagation tibble
 │   │   ├── to_constant_adjustment_list.R
 │   │   ├── read_fixture.R
@@ -287,6 +350,10 @@ reports/round.qmd                ← Quarto round report
 app/app.R                        ← Shiny dashboard (just dashboard)
 docs/llm_layer.md                ← LLM-judgement walkthrough
 docs/dashboard.md                ← dashboard runtime guide
+docs/martin_model_review.md      ← ★ comparative review of MARTIN vs peer models
+docs/martin_enhancements_plan.md ← ★ the 3 original enhancements + tier taxonomy
+docs/income_side_scope.md        ← ★ income-side-of-GDP agenda (I-0..I-3, all done)
+docs/data_refinements.md         ← stock seeds + point-in-time vintage assessment
 DESIGN.md                        ← longer architectural story
 CLAUDE.md                        ← context for sessions
 ```
@@ -366,13 +433,49 @@ CLAUDE.md                        ← context for sessions
   doesn't eliminate it. The over-correction guard in
   `pick_best_iteration()` is what catches the worst case.
 
+- **bimets identities do NOT support `@recode`.** The `.txt` model uses none
+  (which is why the EViews ELB floor and `IBCR` guard are absent — a finding the
+  review flagged). Use behavioural form (`c1*(...)` with `RESTRICT c1=1`) if you
+  need a guard, or write the identity to stay finite by construction.
+
+- **Every endogenous variable (incl. new identities) must have a series in the
+  database with DEFINED initialisation values.** NA-seeding fails with "all
+  endogenous values are undefined". `model_features.R` computes new series
+  historically before the solve (`seed_feature_data()`); copy that pattern.
+
+- **Adding a feature must keep the default path bit-identical.** `load_martin()`
+  /`solve_martin()` with `features = character(0)` return the verbatim model.
+  Test 3 of the regression test pins exact `PTM`/`RC`/`LE` coefficients, so any
+  equation swap (T3 features) MUST be opt-in, never in the default `.txt`.
+
+- **Quarterly-vs-annual units.** Debt-to-GDP uses ANNUAL GDP (`4*NY`); an annual
+  implicit interest rate on a stock needs `/400` (not `/100`) to give a quarterly
+  flow. Getting these consistent matters — a masked offset between the two bit
+  the fiscal demo once (see `corporate`/`fiscal` blocks in `model_features.R`).
+
 ---
 
 ## What's been done (active code surface)
 
 For canonical history use `git log`. Major landed workstreams:
 
-- **LLM judgement layer (most recent work):**
+- **Comparative review + MARTIN enhancements (the most recent, largest work):**
+  - A multi-agent comparative review of MARTIN vs FR-BDF / ECB-BASE/MC/(RE)BASE /
+    EMMA / AUS-M / the RBA DSGE family ([docs/martin_model_review.md](docs/martin_model_review.md)),
+    which surfaced (and source-verified) a three-way yield-curve inconsistency and
+    the structural gaps that drove the feature work.
+  - **12 opt-in model features** ([packages/martin/R/model_features.R](packages/martin/R/model_features.R))
+    implementing the review's recs + the full income-side-of-GDP agenda: a CES
+    output gap (EMMA inversion), external + fiscal stock accounting (with a
+    history-matched reconciled fiscal balance), the income side (GDP(I), GNI,
+    household & corporate decomposition), a BGG financial accelerator on `NBRSP`,
+    a debt-elastic FX premium, a debt-stabilising fiscal rule, a convex Phillips
+    curve, and an inverted-PF employment target. Every one is opt-in and
+    baseline-neutral by default; real ABS feeds verified live. See the dedicated
+    "MARTIN model enhancements" section above and the three planning docs.
+  - `man/*.Rd` regenerated for `martin` + `sibyldata` (closing an old TODO).
+
+- **LLM judgement layer:**
   - Sensitivity matrix + threading into propose/refine prompts.
   - Iterative refinement loop with best-iter selection
     (`propose_with_refinement()`).
