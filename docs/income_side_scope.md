@@ -127,10 +127,20 @@ corporate sector).
 > plug to actual `NGREV`; interest uses the actual ABS series; debt is reported
 > in annual-GDP units. On real ABS data 2010–19: `DEF_GDP` mean ~2.7% (peaking
 > ~6.7% post-GFC, falling) and `BG_GDP` rising 31→43% — the realised Australian
-> trajectory. Tests: `test-fiscal-reconciled.R`. **Still to do in I-2:** the
-> household side — decompose `NHOY` into property income + GMI − taxes +
-> transfers (baseline-neutrality-sensitive, `NHOY → NHDY → RC`), and corporate
-> retained earnings (feeds I-3).
+> trajectory. Tests: `test-fiscal-reconciled.R`.
+>
+> **Household side (Phase 1) also shipped** as the `household_income` feature: a
+> *baseline-neutral* decomposition of `NHOY` into income-account components
+> (`HH_NONLAB` non-labour primary income, `NHTAX` taxes, `NTRANSFERS`,
+> `NHOY_RESID`) plus the effective household tax rate `HH_TAXRATE` (18-22% on real
+> ABS data, from HH_PRIMARY A2302917X and NHTAX A2302937J). `NHOY`/`NHDY`/`RC`
+> stay untouched (the residual plugs to the existing `NHOY`). `NHOY_RESID` is
+> ~35% of `NHOY` (~14% of `NHDY`) -- the definitional gap between MARTIN's
+> modelled `NHDY` and the ABS household account, a useful diagnostic. Tests:
+> `test-household-income.R`. **Still to do in I-2:** *Phase 2* -- make `NHOY` the
+> sum of endogenous components (taxes responding to income, transfers to
+> unemployment), which re-baselines `RC` (opt-in); and corporate retained
+> earnings (feeds I-3).
 
 
 The "Sudoku": secondary distribution of income (taxes and transfers) maps

@@ -29,6 +29,12 @@ balanced auto-calibration; \code{"reconciled"} (I-2) matches the balance to the
 realised ABS income account (\code{NG} + income-account payables = total
 outlays, corporate tax on \code{GOS}), needing the real fiscal series +
 \code{income_side}. Debt is in annual-GDP units. See \code{docs/income_side_scope.md}.}
+\item{\code{household_income}}{(I-2 household) Baseline-neutral decomposition of
+the lumped household non-labour income \code{NHOY} into income-account parts.
+Adds \code{HH_NONLAB} (non-labour primary income), \code{NHOY_RESID}, \code{NHDY_RECON}
+and \code{HH_TAXRATE}, using real ABS household-account series \code{HH_PRIMARY}
+(A2302917X) and \code{NHTAX} (A2302937J) when present. Leaves \code{NHOY}/\code{NHDY}/\code{RC}
+untouched. See \code{docs/income_side_scope.md}.}
 \item{\code{income_side}}{(I-0) Income side of GDP: the decomposition
 \code{NY = NHCOE + GOS + GMI + TAX_PROD_NET}. Adds \code{GOS} (gross operating
 surplus, as the residual), \code{PROFIT_SHARE} and \code{LABOUR_SHARE}. \code{GMI} and

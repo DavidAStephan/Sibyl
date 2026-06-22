@@ -246,3 +246,5 @@ NGEXP,abs,A2302753R,5206.0,Q,NA,direct,General government total income payable /
 NGINT,abs,A2302745R,5206.0,Q,NA,direct,General government total interest payable (SA) -- fiscal_accounting feature,AUD millions,NA
 GMI,abs,A2303377R,5206.0,Q,NA,direct,Gross mixed income (SA) -- income_side feature,AUD millions,NA
 TAX_PROD_NET,abs,A2303381F,5206.0,Q,NA,direct,Taxes less subsidies on production and imports (SA) -- income_side feature,AUD millions,NA
+HH_PRIMARY,abs,A2302917X,5206.0,Q,NA,direct,Household total primary income receivable (SA) -- household_income feature,AUD millions,NA
+NHTAX,abs,A2302937J,5206.0,Q,NA,direct,Household total secondary income payable: income tax + transfers paid (SA) -- household_income feature,AUD millions,NA

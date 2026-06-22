@@ -24,6 +24,12 @@
 #'     realised ABS income account (`NG` + income-account payables = total
 #'     outlays, corporate tax on `GOS`), needing the real fiscal series +
 #'     `income_side`. Debt is in annual-GDP units. See `docs/income_side_scope.md`.}
+#'   \item{`household_income`}{(I-2 household) Baseline-neutral decomposition of
+#'     the lumped household non-labour income `NHOY` into income-account parts.
+#'     Adds `HH_NONLAB` (non-labour primary income), `NHOY_RESID`, `NHDY_RECON`
+#'     and `HH_TAXRATE`, using real ABS household-account series `HH_PRIMARY`
+#'     (A2302917X) and `NHTAX` (A2302937J) when present. Leaves `NHOY`/`NHDY`/`RC`
+#'     untouched. See `docs/income_side_scope.md`.}
 #'   \item{`income_side`}{(I-0) Income side of GDP: the decomposition
 #'     `NY = NHCOE + GOS + GMI + TAX_PROD_NET`. Adds `GOS` (gross operating
 #'     surplus, as the residual), `PROFIT_SHARE` and `LABOUR_SHARE`. `GMI` and
@@ -47,6 +53,7 @@ NULL
 # blocks), then swaps.
 .MARTIN_FEATURES <- c(
   "output_gap", "external_accounting", "fiscal_accounting", "income_side",
+  "household_income",
   "fx_premium", "fiscal_rule", "convex_ptm", "inverted_le"
 )
 
@@ -84,7 +91,11 @@ feature_defaults <- function() {
     # Income side (I-0): proxy shares of GDP used only when the real ABS
     # series (GMI, TAX_PROD_NET) are absent (e.g. on the fixture).
     income_gmi_share = 0.08,
-    income_tax_share = 0.05
+    income_tax_share = 0.05,
+    # Household income account (I-2 household): proxy shares of GDP for
+    # HH_PRIMARY / NHTAX when the real ABS series are absent.
+    hh_primary_share = 0.42,
+    hh_tax_share     = 0.13
   )
 }
 
@@ -102,6 +113,8 @@ feature_new_vars <- function(features) {
     v <- c(v, "NREV", "NSPEND", "NLEND", "INTG", "BG", "BG_GDP", "DEF_GDP")
   if ("income_side" %in% features)
     v <- c(v, "GOS", "PROFIT_SHARE", "LABOUR_SHARE")
+  if ("household_income" %in% features)
+    v <- c(v, "HH_NONLAB", "NHOY_RESID", "NHDY_RECON", "HH_TAXRATE")
   unique(v)
 }
 
@@ -302,6 +315,32 @@ feature_new_vars <- function(features) {
   )
 }
 
+# I-2 household income account: a baseline-neutral decomposition of the lumped
+# household non-labour income NHOY into its income-account components. NHOY,
+# NHDY and consumption RC are untouched (NHOY_RESID plugs the components to the
+# existing NHOY); a small residual means the ABS components explain NHOY well.
+.block_household_income <- function(p) {
+  c(
+    "COMMENT> SIBYL household_income (I-2): decompose NHOY into income-account parts",
+    "COMMENT> HH_NONLAB  household non-labour primary income (GMI + property income) = HH_PRIMARY - NHCOE",
+    "IDENTITY> HH_NONLAB",
+    "EQ> HH_NONLAB = HH_PRIMARY - NHCOE",
+    "",
+    "COMMENT> NHOY_RESID  unexplained residual: NHOY minus the ABS components",
+    "IDENTITY> NHOY_RESID",
+    "EQ> NHOY_RESID = NHOY - HH_NONLAB + NHTAX - NTRANSFERS",
+    "",
+    "COMMENT> NHDY_RECON  household disposable income rebuilt from the account (= NHDY by construction)",
+    "IDENTITY> NHDY_RECON",
+    "EQ> NHDY_RECON = HH_PRIMARY - NHTAX + NTRANSFERS + NHOY_RESID",
+    "",
+    "COMMENT> HH_TAXRATE  effective household tax rate, per cent of primary income",
+    "IDENTITY> HH_TAXRATE",
+    "EQ> HH_TAXRATE = NHTAX / HH_PRIMARY * 100",
+    ""
+  )
+}
+
 # --- swap-based features ----------------------------------------------------
 
 .feature_fx_premium <- function(text, p) {
@@ -369,6 +408,8 @@ apply_model_features <- function(lines, features = character(0),
     blocks <- c(blocks, .block_fiscal(p))
   if ("income_side" %in% features)
     blocks <- c(blocks, .block_income_side(p))
+  if ("household_income" %in% features)
+    blocks <- c(blocks, .block_household_income(p))
   if (length(blocks)) lines <- .insert_blocks_before_end(lines, blocks)
 
   # 2. text swaps (operate on the full text, incl. inserted blocks)
@@ -445,6 +486,17 @@ seed_feature_data <- function(database, features = character(0),
     if (is.null(database[["TAX_PROD_NET"]]))
       database <- .seed_proportional(database, "TAX_PROD_NET", p$income_tax_share)
     ser <- .compute_income_side(database, p)
+    for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
+  }
+
+  if ("household_income" %in% features) {
+    if (is.null(database[["HH_PRIMARY"]]))
+      database <- .seed_proportional(database, "HH_PRIMARY", p$hh_primary_share)
+    if (is.null(database[["NHTAX"]]))
+      database <- .seed_proportional(database, "NHTAX", p$hh_tax_share)
+    if (is.null(database[["NTRANSFERS"]]))
+      database <- .seed_proportional(database, "NTRANSFERS", p$fiscal_transfer_share)
+    ser <- .compute_household_income(database, p)
     for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
@@ -544,6 +596,19 @@ seed_feature_data <- function(database, features = character(0),
   sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
   db[[nm]] <- bimets::TIMESERIES(share * as.numeric(nyts), START = c(sy, sq), FREQ = 4)
   db
+}
+
+# Household income-account decomposition computed historically.
+.compute_household_income <- function(db, p) {
+  a <- .align_db(db, c("NHCOE", "NHOY", "HH_PRIMARY", "NHTAX", "NTRANSFERS"))
+  m <- a$mat
+  hh_nonlab <- m[, "HH_PRIMARY"] - m[, "NHCOE"]
+  nhoy_resid <- m[, "NHOY"] - hh_nonlab + m[, "NHTAX"] - m[, "NTRANSFERS"]
+  nhdy_recon <- m[, "HH_PRIMARY"] - m[, "NHTAX"] + m[, "NTRANSFERS"] + nhoy_resid
+  mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
+  list(HH_NONLAB = mk(hh_nonlab), NHOY_RESID = mk(nhoy_resid),
+       NHDY_RECON = mk(nhdy_recon),
+       HH_TAXRATE = mk(m[, "NHTAX"] / m[, "HH_PRIMARY"] * 100))
 }
 
 # GDP(I) decomposition computed historically (GOS as the residual).
