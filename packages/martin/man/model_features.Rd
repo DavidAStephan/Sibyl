@@ -25,6 +25,11 @@ Uses \code{NFOY}/\code{NTRF} if present (else 0) and a \code{VNFL} seed.}
 \item{\code{fiscal_accounting}}{Government budget-and-debt accounting. Adds
 \code{NREV}, \code{NSPEND}, \code{NLEND}, \code{INTG}, \code{BG}, \code{BG_GDP}, \code{DEF_GDP}. Uses
 effective tax rates / transfers as exogenous inputs.}
+\item{\code{income_side}}{(I-0) Income side of GDP: the decomposition
+\code{NY = NHCOE + GOS + GMI + TAX_PROD_NET}. Adds \code{GOS} (gross operating
+surplus, as the residual), \code{PROFIT_SHARE} and \code{LABOUR_SHARE}. \code{GMI} and
+\code{TAX_PROD_NET} are real ABS series (5206.0) when present, else share-of-GDP
+proxies. See \code{docs/income_side_scope.md}.}
 \item{\code{fx_premium}}{(T2) Debt-elastic exchange-rate risk premium: adds a
 \code{NFL_GDP} term to the \code{RTWI} equation. Needs \code{external_accounting}.}
 \item{\code{fiscal_rule}}{(T2) Debt-stabilising fiscal rule on the effective

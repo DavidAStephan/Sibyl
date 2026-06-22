@@ -64,7 +64,16 @@ PSBR/debt accounting. The enabling primitive in both is the GDP(I) identity.
 
 ## 3. The tiers
 
-### Tier I-0 — the GDP(I) primitive *(small; baseline-neutral; high enabling value)*
+### Tier I-0 — the GDP(I) primitive *(small; baseline-neutral; high enabling value)* — **IMPLEMENTED**
+
+> **Status: shipped.** Implemented as the `income_side` model feature
+> (`packages/martin/R/model_features.R`). On the fixture with real ABS `GMI`
+> (A2303377R) and `TAX_PROD_NET` (A2303381F): `PROFIT_SHARE` 38–42%,
+> `LABOUR_SHARE` 46–49% — both spot-on for Australia; the GDP(I) identity holds
+> and the layer is baseline-neutral. `GOS` is the residual (absorbing the small
+> income-side discrepancy, since ABS does not publish a clean SA SD(I)).
+> Tests: `test-income-side.R`. Tiers I-1/I-2/I-3 below remain to scope/build.
+
 
 The foundational identity. New reporting identities:
 

@@ -244,3 +244,5 @@ NGSEC,abs,A2302741F,5206.0,Q,NA,direct,General government total secondary income
 NGREV,derived,NA,NA,Q,NA,derived,Total general government revenue (primary + secondary income receivable) -- fiscal_accounting feature,AUD millions,NGPRI + NGSEC
 NGEXP,abs,A2302753R,5206.0,Q,NA,direct,General government total income payable / total expenditure (SA) -- fiscal_accounting feature,AUD millions,NA
 NGINT,abs,A2302745R,5206.0,Q,NA,direct,General government total interest payable (SA) -- fiscal_accounting feature,AUD millions,NA
+GMI,abs,A2303377R,5206.0,Q,NA,direct,Gross mixed income (SA) -- income_side feature,AUD millions,NA
+TAX_PROD_NET,abs,A2303381F,5206.0,Q,NA,direct,Taxes less subsidies on production and imports (SA) -- income_side feature,AUD millions,NA

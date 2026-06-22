@@ -20,6 +20,11 @@
 #'   \item{`fiscal_accounting`}{Government budget-and-debt accounting. Adds
 #'     `NREV`, `NSPEND`, `NLEND`, `INTG`, `BG`, `BG_GDP`, `DEF_GDP`. Uses
 #'     effective tax rates / transfers as exogenous inputs.}
+#'   \item{`income_side`}{(I-0) Income side of GDP: the decomposition
+#'     `NY = NHCOE + GOS + GMI + TAX_PROD_NET`. Adds `GOS` (gross operating
+#'     surplus, as the residual), `PROFIT_SHARE` and `LABOUR_SHARE`. `GMI` and
+#'     `TAX_PROD_NET` are real ABS series (5206.0) when present, else share-of-GDP
+#'     proxies. See `docs/income_side_scope.md`.}
 #'   \item{`fx_premium`}{(T2) Debt-elastic exchange-rate risk premium: adds a
 #'     `NFL_GDP` term to the `RTWI` equation. Needs `external_accounting`.}
 #'   \item{`fiscal_rule`}{(T2) Debt-stabilising fiscal rule on the effective
@@ -37,7 +42,7 @@ NULL
 # Order matters: insertions first (so swap-based features can target inserted
 # blocks), then swaps.
 .MARTIN_FEATURES <- c(
-  "output_gap", "external_accounting", "fiscal_accounting",
+  "output_gap", "external_accounting", "fiscal_accounting", "income_side",
   "fx_premium", "fiscal_rule", "convex_ptm", "inverted_le"
 )
 
@@ -65,7 +70,11 @@ feature_defaults <- function() {
     fiscal_iirg     = 4,           # implicit interest rate on govt debt (%)
     fiscal_def_target = 0.0,       # target primary balance / GDP for calibration
     # External accounting.
-    nfl_seed = NA_real_
+    nfl_seed = NA_real_,
+    # Income side (I-0): proxy shares of GDP used only when the real ABS
+    # series (GMI, TAX_PROD_NET) are absent (e.g. on the fixture).
+    income_gmi_share = 0.08,
+    income_tax_share = 0.05
   )
 }
 
@@ -81,6 +90,8 @@ feature_new_vars <- function(features) {
     v <- c(v, "NTB", "TB_GDP", "NCA", "VNFL", "NFL_GDP", "CAD_GDP")
   if ("fiscal_accounting" %in% features)
     v <- c(v, "NREV", "NSPEND", "NLEND", "INTG", "BG", "BG_GDP", "DEF_GDP")
+  if ("income_side" %in% features)
+    v <- c(v, "GOS", "PROFIT_SHARE", "LABOUR_SHARE")
   unique(v)
 }
 
@@ -216,6 +227,25 @@ feature_new_vars <- function(features) {
   )
 }
 
+.block_income_side <- function(p) {
+  c(
+    "COMMENT> SIBYL income_side (I-0): GDP(I) decomposition  NY = NHCOE + GOS + GMI + TAX_PROD_NET",
+    "COMMENT> GOS  gross operating surplus + mixed-income residual (incl. the small income-side",
+    "COMMENT> statistical discrepancy); GMI and TAX_PROD_NET are exogenous (real ABS or proxy).",
+    "IDENTITY> GOS",
+    "EQ> GOS = NY - NHCOE - GMI - TAX_PROD_NET",
+    "",
+    "COMMENT> PROFIT_SHARE  gross operating surplus, per cent of GDP",
+    "IDENTITY> PROFIT_SHARE",
+    "EQ> PROFIT_SHARE = GOS / NY * 100",
+    "",
+    "COMMENT> LABOUR_SHARE  compensation of employees, per cent of GDP (= NHWS*100)",
+    "IDENTITY> LABOUR_SHARE",
+    "EQ> LABOUR_SHARE = NHCOE / NY * 100",
+    ""
+  )
+}
+
 # --- swap-based features ----------------------------------------------------
 
 .feature_fx_premium <- function(text, p) {
@@ -281,6 +311,8 @@ apply_model_features <- function(lines, features = character(0),
     blocks <- c(blocks, .block_external(p))
   if ("fiscal_accounting" %in% features)
     blocks <- c(blocks, .block_fiscal(p))
+  if ("income_side" %in% features)
+    blocks <- c(blocks, .block_income_side(p))
   if (length(blocks)) lines <- .insert_blocks_before_end(lines, blocks)
 
   # 2. text swaps (operate on the full text, incl. inserted blocks)
@@ -372,7 +404,38 @@ seed_feature_data <- function(database, features = character(0),
     for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
   }
 
+  if ("income_side" %in% features) {
+    # GMI and TAX_PROD_NET: real ABS series when present (M1 catalogue), else
+    # share-of-GDP proxies so the block works on the fixture too.
+    if (is.null(database[["GMI"]]))
+      database <- .seed_proportional(database, "GMI", p$income_gmi_share)
+    if (is.null(database[["TAX_PROD_NET"]]))
+      database <- .seed_proportional(database, "TAX_PROD_NET", p$income_tax_share)
+    ser <- .compute_income_side(database, p)
+    for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
+  }
+
   database
+}
+
+# Seed `nm` as a constant share of nominal GDP over NY's span.
+.seed_proportional <- function(db, nm, share) {
+  nyts <- stats::as.ts(db[["NY"]])
+  tsp  <- stats::tsp(nyts)
+  sy <- floor(tsp[1] + 1e-9); sq <- round((tsp[1] - sy) * 4 + 1)
+  db[[nm]] <- bimets::TIMESERIES(share * as.numeric(nyts), START = c(sy, sq), FREQ = 4)
+  db
+}
+
+# GDP(I) decomposition computed historically (GOS as the residual).
+.compute_income_side <- function(db, p) {
+  a <- .align_db(db, c("NY", "NHCOE", "GMI", "TAX_PROD_NET"))
+  m <- a$mat
+  gos <- m[, "NY"] - m[, "NHCOE"] - m[, "GMI"] - m[, "TAX_PROD_NET"]
+  mk <- function(v) bimets::TIMESERIES(v, START = a$start, FREQ = 4)
+  list(GOS = mk(gos),
+       PROFIT_SHARE = mk(gos / m[, "NY"] * 100),
+       LABOUR_SHARE = mk(m[, "NHCOE"] / m[, "NY"] * 100))
 }
 
 # Align named db series on their common window; returns matrix + start/length.
