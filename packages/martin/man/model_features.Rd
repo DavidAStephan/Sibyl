@@ -59,5 +59,13 @@ gap term in \code{PTM} for the reciprocal \code{c7*(LURGAP/LUR)} form (re-estima
 \item{\code{inverted_le}}{(T3) Capital-aware employment: swaps the reduced-form
 error-correction target in \code{LE} for the inverted-production-function
 employment \code{LESTAR} (re-estimated). Needs \code{output_gap}.}
+\item{\code{elb_floor}}{(T1, fidelity) Restores the EViews effective-lower-bound
+floor on the cash rate (\code{equations.prg} L538, dropped by the bimets port).
+Renames the Taylor-rule behavioural to \code{NCR_RULE} (preserving estimation +
+residual handover) and makes \code{NCR} a floored identity at
+\code{feature_params$elb_floor_value} (default 0.1). Baseline-neutral: the floor
+never binds in sample so the solve is unchanged; it only bites in a
+forecast that eases below the bound. NB: with this on, cash-rate add-factors
+must target \code{NCR_RULE}, since \code{NCR} is now an identity.}
 }
 }

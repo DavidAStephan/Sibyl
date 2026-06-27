@@ -52,8 +52,8 @@ LUR,Unemployment rate,labour,behavioural,Quarterly change in the unemployment ra
 LPR,Labour force participation rate,labour,behavioural,Closes to employment over working-age population.,level,FALSE,NA,Reported aggregate; no model feedback.
 LPOP,Working-age population,labour,behavioural,Working-age population; closes to its trend.,log_diff,FALSE,NA,LPOP -> LF LPR.
 NCR,Nominal cash rate,interest_rates,behavioural,Taylor rule in trimmed-mean inflation and the unemployment gap.,percent,TRUE,0.25,NCR -> RCR N2R N10R NBR NMR -> RC PH NHC NHL.
-N2R,2-year bond yield,interest_rates,behavioural,Simple expectations rule: drifts with the cash rate.,percent,TRUE,0.2,N2R -> R2R WR2SP -> RTWI.
-N10R,10-year bond yield,interest_rates,behavioural,Simple expectations rule: drifts with the cash rate.,percent,TRUE,0.3,N10R -> IBCR (cost of capital for IBN).
+N2R,2-year bond yield,interest_rates,behavioural,Expectations-hypothesis term structure; error-corrects toward expected future short rates (RSTAR + PI_E + 0.52 of the current cash-rate gap) with persistence.,percent,TRUE,0.2,N2R -> R2R WR2SP -> RTWI.
+N10R,10-year bond yield,interest_rates,behavioural,Expectations-hypothesis term structure; error-corrects toward expected future short rates (RSTAR + PI_E + 0.25 of the current cash-rate gap) plus a constant term premium.,percent,TRUE,0.3,N10R -> IBCR (cost of capital for IBN).
 NBRSP,Nominal business rate spread,interest_rates,behavioural,Spread of business borrowing rate over the cash rate; widens with unemployment gap.,percent,TRUE,0.1,NBRSP -> NBR -> RBR -> IBCR.
 NSP,Mortgage rate spread,interest_rates,behavioural,Spread of variable mortgage rate over the cash rate.,percent,TRUE,0.05,NSP -> NMR RMR -> RC PH NHC.
 RTWI,Real trade-weighted exchange rate,interest_rates,behavioural,Real TWI; depends on terms of trade and the real-interest-rate spread to the world.,log_diff,TRUE,2,RTWI -> NTWI NUSD REWI -> PM exports.

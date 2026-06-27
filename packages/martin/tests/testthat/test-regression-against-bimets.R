@@ -29,7 +29,11 @@
 
 # Headline variables checked first. If these match, the bulk of the model
 # is working; if not, the failure messages are immediately interpretable.
-HEADLINE <- c("Y", "RC", "GNE", "LUR", "PTM", "NCR")
+# N2R/N10R are included so the term-structure path is pinned by the
+# bit-identity check (the EViews .prg random-walks these; the bimets file we
+# solve uses the live expectations-hypothesis form -- see the dedicated
+# form-pin test below).
+HEADLINE <- c("Y", "RC", "GNE", "LUR", "PTM", "NCR", "N2R", "N10R")
 
 # Demo range from BIMETS_MARTIN_LOAD.R lines 124-127.
 HORIZON  <- c("2010Q1", "2019Q3")
@@ -167,6 +171,62 @@ test_that("frozen ESTIMATE pins expected behavioural coefficients", {
   le <- coef_of("LE")
   expect_equal(unname(le["c1"]), 0.11129236, tolerance = 1e-5)
   expect_equal(unname(le["c3"]), 0.48376731, tolerance = 1e-5)
+})
+
+# --- (3) Pin the term-structure FORM --------------------------------------
+#
+# The review flagged a live three-way hazard: the EViews .prg random-walks
+# N2R/N10R (`N = N(-1) + d(NCR)`), the bimets file we actually solve uses the
+# live expectations-hypothesis (EH) form, and the LLM-facing
+# equation_catalogue.csv used to describe them as a random walk. The bit-
+# identity test above is self-referential (a model-file edit would move both
+# sides together), so it CANNOT catch a silent reversion of the yield form.
+# This test pins the form directly against the model text + estimated weights.
+test_that("the yield curve uses the live expectations-hypothesis form", {
+  skip_if_not_installed("bimets")
+
+  lines <- readLines(model_file_path("af"))
+
+  # Extract a behavioural's EQ text: from `BEHAVIORAL> <eq>` to the next COEFF>.
+  eq_text <- function(eq) {
+    i0 <- which(lines == paste0("BEHAVIORAL> ", eq))
+    expect_length(i0, 1L)
+    i1 <- i0 + which(grepl("^COEFF>", lines[(i0 + 1):length(lines)]))[1] - 1L
+    paste(lines[(i0 + 1):i1], collapse = " ")
+  }
+
+  n10r <- eq_text("N10R")
+  n2r  <- eq_text("N2R")
+
+  # The EH form references the neutral rate and inflation expectations and a
+  # cash-rate gap weight; the random-walk form does neither.
+  for (eq in list(n10r, n2r)) {
+    expect_match(eq, "RSTAR")
+    expect_match(eq, "PI_E")
+  }
+  expect_match(n10r, "0.25", fixed = TRUE)  # N10R gap weight
+  expect_match(n2r,  "0.52", fixed = TRUE)  # N2R gap weight
+  # Guard against reversion to the EViews random walk N = N(-1) + d(NCR).
+  expect_false(grepl("TSDELTA(NCR", n10r, fixed = TRUE))
+  expect_false(grepl("TSDELTA(NCR", n2r,  fixed = TRUE))
+
+  # Pin the estimated EH weights (RESTRICT> c1+c2=1 on N10R, c2+c3=1 on N2R).
+  skip_if_not(file.exists(martin_data_fixture()), "MARTINDATA fixture missing")
+  model <- load_martin(read_fixture(), variant = "af", estimate = TRUE)
+  coef_of <- function(eq) {
+    co <- model$behaviorals[[eq]]$coefficients
+    stats::setNames(as.numeric(co), rownames(co))
+  }
+  n10 <- coef_of("N10R")
+  expect_equal(unname(n10["c1"]),  0.89657041, tolerance = 1e-5)
+  expect_equal(unname(n10["c2"]),  0.10342959, tolerance = 1e-5)
+  expect_equal(unname(n10["c1"] + n10["c2"]), 1, tolerance = 1e-8,
+               info = "N10R c1+c2=1 EH restriction")
+  n2 <- coef_of("N2R")
+  expect_equal(unname(n2["c2"]),  0.14178270, tolerance = 1e-5)
+  expect_equal(unname(n2["c3"]),  0.85821730, tolerance = 1e-5)
+  expect_equal(unname(n2["c2"] + n2["c3"]), 1, tolerance = 1e-8,
+               info = "N2R c2+c3=1 EH restriction")
 })
 
 # --- (2) Forecast-period plausibility past the fixture data end -------------

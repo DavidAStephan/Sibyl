@@ -54,6 +54,14 @@
 #'   \item{`inverted_le`}{(T3) Capital-aware employment: swaps the reduced-form
 #'     error-correction target in `LE` for the inverted-production-function
 #'     employment `LESTAR` (re-estimated). Needs `output_gap`.}
+#'   \item{`elb_floor`}{(T1, fidelity) Restores the EViews effective-lower-bound
+#'     floor on the cash rate (`equations.prg` L538, dropped by the bimets port).
+#'     Renames the Taylor-rule behavioural to `NCR_RULE` (preserving estimation +
+#'     residual handover) and makes `NCR` a floored identity at
+#'     `feature_params$elb_floor_value` (default 0.1). Baseline-neutral: the floor
+#'     never binds in sample so the solve is unchanged; it only bites in a
+#'     forecast that eases below the bound. NB: with this on, cash-rate add-factors
+#'     must target `NCR_RULE`, since `NCR` is now an identity.}
 #' }
 #'
 #' @name model_features
@@ -65,7 +73,7 @@ NULL
   "output_gap", "external_accounting", "fiscal_accounting", "income_side",
   "household_income", "corporate_accelerator",
   "fx_premium", "fiscal_rule", "convex_ptm", "inverted_le",
-  "endogenous_household"
+  "endogenous_household", "elb_floor"
 )
 
 #' Default calibration constants for the optional features
@@ -120,7 +128,11 @@ feature_defaults <- function() {
     # sensitivity (per cent of GDP per pp of LUR above normal) and the normal
     # unemployment rate the transfer rule centres on.
     hh_trans_unemp   = 0.30,
-    hh_lur_norm      = 5.0
+    hh_lur_norm      = 5.0,
+    # Effective-lower-bound floor on the nominal cash rate (per cent). 0.1
+    # reproduces the EViews @recode floor (equations.prg L538) that the bimets
+    # port dropped, so the solved NCR cannot go negative when the feature is on.
+    elb_floor_value  = 0.1
   )
 }
 
@@ -145,6 +157,8 @@ feature_new_vars <- function(features) {
     v <- c(v, "LEV", "RET_EARN", "VCORP", "LEV_DE")
   if ("endogenous_household" %in% features)
     v <- c(v, "NHTAX_EN", "NTRANSFERS_EN")
+  if ("elb_floor" %in% features)
+    v <- c(v, "NCR_RULE")
   unique(v)
 }
 
@@ -497,6 +511,38 @@ feature_new_vars <- function(features) {
              paste0(rule, "\nCOMMENT> SIBYL fiscal_accounting: government budget + debt accounting"))
 }
 
+# Effective-lower-bound floor on the cash rate. EViews floors the Taylor rule at
+# 0.1 via @recode (equations.prg L538); the bimets port dropped it, so the solved
+# NCR can go negative. We restore it WITHOUT touching the bit-identical default:
+# rename the NCR behavioural to NCR_RULE (so it keeps estimating + carrying its
+# residual/add-factor handover), then add a floored NCR identity using bimets
+# IF> conditional branches (only one IF> per identity group, so the two branches
+# repeat `IDENTITY> NCR`). When the rule sits above the floor -- always, in
+# sample -- NCR == NCR_RULE, so the solve is unchanged; the floor only bites in a
+# forecast that eases the cash rate below the bound.
+.feature_elb_floor <- function(text, p) {
+  floor_val <- p$elb_floor_value
+  lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
+  ib <- which(lines == "BEHAVIORAL> NCR")
+  if (length(ib) != 1L)
+    stop("elb_floor: NCR behavioral not found uniquely", call. = FALSE)
+  lines[ib] <- "BEHAVIORAL> NCR_RULE"
+  ieq <- which(startsWith(lines, "EQ> NCR ") & seq_along(lines) > ib)[1]
+  if (is.na(ieq))
+    stop("elb_floor: NCR equation line not found", call. = FALSE)
+  lines[ieq] <- sub("EQ> NCR ", "EQ> NCR_RULE ", lines[ieq], fixed = TRUE)
+  blk <- c(
+    "COMMENT> SIBYL elb_floor: effective-lower-bound floor on the cash rate (EViews @recode parity)",
+    "IDENTITY> NCR",
+    "EQ> NCR = NCR_RULE",
+    sprintf("IF> NCR_RULE > %.10g", floor_val),
+    "IDENTITY> NCR",
+    sprintf("EQ> NCR = %.10g", floor_val),
+    sprintf("IF> NCR_RULE <= %.10g", floor_val))
+  lines <- .insert_blocks_before_end(lines, blk)
+  paste(lines, collapse = "\n")
+}
+
 #' Apply requested features to MARTIN model text lines
 #' @param lines Character vector of model-file lines.
 #' @param features Character vector of feature names (subset of
@@ -543,6 +589,8 @@ apply_model_features <- function(lines, features = character(0),
     text <- .feature_corporate_accelerator(text, p)
   if ("endogenous_household" %in% features)
     text <- .feature_endogenous_household(text, p)
+  if ("elb_floor" %in% features)
+    text <- .feature_elb_floor(text, p)
 
   strsplit(text, "\n", fixed = TRUE)[[1]]
 }
@@ -681,6 +729,17 @@ seed_feature_data <- function(database, features = character(0),
       ser <- .compute_fiscal_series(database, p)
       for (nm in names(ser)) if (is.null(database[[nm]])) database[[nm]] <- ser[[nm]]
     }
+  }
+
+  if ("elb_floor" %in% features) {
+    # The renamed Taylor-rule behavioural NCR_RULE inherits NCR's history so it
+    # estimates identically (and carries the same residual into the forecast);
+    # NCR itself becomes the floored identity. Floor never binds in sample, so
+    # NCR_RULE == NCR there and the seed is exact.
+    if (is.null(database[["NCR"]]))
+      stop("elb_floor feature requires `NCR` in the database.", call. = FALSE)
+    if (is.null(database[["NCR_RULE"]]))
+      database[["NCR_RULE"]] <- database[["NCR"]]
   }
 
   database
